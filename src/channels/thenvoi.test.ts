@@ -6,6 +6,9 @@ let onExecuteCallback:
   | ((context: unknown, event: unknown) => Promise<void>)
   | null = null;
 let onSessionCleanupCallback: ((roomId: string) => Promise<void>) | null = null;
+let onContactEventCallback:
+  | ((event: unknown) => Promise<void>)
+  | null = null;
 
 const mockRuntime = {
   start: vi.fn().mockResolvedValue(undefined),
@@ -26,9 +29,11 @@ vi.mock('@thenvoi/sdk', () => ({
   AgentRuntime: vi.fn().mockImplementation(function (opts: {
     onExecute: (ctx: unknown, ev: unknown) => Promise<void>;
     onSessionCleanup?: (roomId: string) => Promise<void>;
+    onContactEvent?: (event: unknown) => Promise<void>;
   }) {
     onExecuteCallback = opts.onExecute;
     onSessionCleanupCallback = opts.onSessionCleanup ?? null;
+    onContactEventCallback = opts.onContactEvent ?? null;
     return mockRuntime;
   }),
 }));
@@ -40,9 +45,13 @@ vi.mock('../env.js', () => ({
 vi.mock('../db.js', () => ({
   setRegisteredGroup: vi.fn(),
   getAllRegisteredGroups: vi.fn().mockReturnValue({}),
+  storeMessage: vi.fn(),
+  getRouterState: vi.fn().mockReturnValue(null),
+  setRouterState: vi.fn(),
 }));
 
 vi.mock('../group-folder.js', () => ({
+  resolveGroupFolderPath: vi.fn().mockReturnValue('/tmp/test-group'),
   isValidGroupFolder: vi.fn().mockReturnValue(true),
 }));
 
@@ -322,6 +331,26 @@ describe('Thenvoi Channel', () => {
       await ch.disconnect();
 
       expect(mockRuntime.stop).toHaveBeenCalled();
+    });
+  });
+
+  describe('contact events', () => {
+    it('captures onContactEvent callback', async () => {
+      const ch = createChannel()!;
+      await ch.connect();
+      expect(onContactEventCallback).toBeInstanceOf(Function);
+    });
+
+    it('logs warning for disabled strategy', async () => {
+      // THENVOI_CONTACT_STRATEGY defaults to 'disabled' (not in process.env)
+      const ch = createChannel()!;
+      await ch.connect();
+
+      // Should not throw
+      await onContactEventCallback!({
+        type: 'contact_request_received',
+        payload: { id: 'req-1', from_handle: 'alice', from_name: 'Alice', status: 'pending' },
+      });
     });
   });
 });

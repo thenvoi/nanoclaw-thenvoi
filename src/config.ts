@@ -6,13 +6,29 @@ import { readEnvFile } from './env.js';
 // Read config values from .env (falls back to process.env).
 // Secrets (API keys, tokens) are NOT read here — they are loaded only
 // by the credential proxy (credential-proxy.ts), never exposed to containers.
-const envConfig = readEnvFile(['ASSISTANT_NAME', 'ASSISTANT_HAS_OWN_NUMBER']);
+const envConfig = readEnvFile([
+  'ASSISTANT_NAME',
+  'ASSISTANT_HAS_OWN_NUMBER',
+  'THENVOI_CONTACT_STRATEGY',
+  'THENVOI_OWNER_ID',
+]);
 
 export const ASSISTANT_NAME =
   process.env.ASSISTANT_NAME || envConfig.ASSISTANT_NAME || 'Andy';
 export const ASSISTANT_HAS_OWN_NUMBER =
   (process.env.ASSISTANT_HAS_OWN_NUMBER ||
     envConfig.ASSISTANT_HAS_OWN_NUMBER) === 'true';
+
+// Thenvoi contact event strategy: disabled | callback | hub_room
+export const THENVOI_CONTACT_STRATEGY =
+  process.env.THENVOI_CONTACT_STRATEGY ||
+  envConfig.THENVOI_CONTACT_STRATEGY ||
+  'disabled';
+
+// Thenvoi platform owner user ID (auto-derived from agent profile if not set)
+export const THENVOI_OWNER_ID =
+  process.env.THENVOI_OWNER_ID || envConfig.THENVOI_OWNER_ID || '';
+
 export const POLL_INTERVAL = 2000;
 export const SCHEDULER_POLL_INTERVAL = 60000;
 
