@@ -6,7 +6,12 @@ import { registerChannel, ChannelOpts } from './registry.js';
 import { readEnvFile } from '../env.js';
 import { resolveGroupFolderPath } from '../group-folder.js';
 import { isValidGroupFolder } from '../group-folder.js';
-import { getRouterState, setRouterState, storeMessage } from '../db.js';
+import {
+  getRouterState,
+  setRouterState,
+  storeChatMetadata,
+  storeMessage,
+} from '../db.js';
 import { Channel, RegisteredGroup } from '../types.js';
 import { logger } from '../logger.js';
 
@@ -308,15 +313,20 @@ registerChannel('thenvoi', (opts) => {
     if (hubRoomInitPromise) return hubRoomInitPromise;
 
     hubRoomInitPromise = (async () => {
-      // Check persisted ID
+      // Check persisted ID — verify it's actually the hub room (right folder)
       const persisted = getRouterState(HUB_ROOM_STATE_KEY);
-      if (persisted && channelOpts.registeredGroups()[`thenvoi:${persisted}`]) {
-        hubRoomId = persisted;
-        logger.info(
-          { hubRoomId },
-          'Thenvoi: reusing existing contact hub room',
-        );
-        return persisted;
+      if (persisted) {
+        const existing = channelOpts.registeredGroups()[`thenvoi:${persisted}`];
+        if (existing && existing.folder === HUB_ROOM_FOLDER) {
+          hubRoomId = persisted;
+          // Ensure chat metadata exists (FK constraint)
+          storeChatMetadata(`thenvoi:${persisted}`, new Date().toISOString(), 'Contact Hub', 'thenvoi', true);
+          logger.info({ hubRoomId }, 'Thenvoi: reusing existing contact hub room');
+          return persisted;
+        }
+        // Stale ID — wrong folder or not registered
+        logger.warn({ persisted }, 'Thenvoi: stale hub room ID, creating new');
+        setRouterState(HUB_ROOM_STATE_KEY, '');
       }
 
       // Create new hub room
@@ -329,7 +339,7 @@ registerChannel('thenvoi', (opts) => {
       if (!ownerId) {
         try {
           const profile = await thenvoiLink.rest.getAgentMe();
-          ownerId = (profile as { owner_uuid?: string }).owner_uuid ?? '';
+          ownerId = profile.ownerUuid ?? '';
         } catch {
           logger.warn(
             'Thenvoi: could not auto-derive owner ID from agent profile',
@@ -363,8 +373,9 @@ registerChannel('thenvoi', (opts) => {
       // Persist hub room ID
       setRouterState(HUB_ROOM_STATE_KEY, newRoomId);
 
-      // Register as NanoClaw group
+      // Register as NanoClaw group and ensure chat metadata (FK constraint)
       const jid = `thenvoi:${newRoomId}`;
+      storeChatMetadata(jid, new Date().toISOString(), 'Contact Hub', 'thenvoi', true);
       if (channelOpts.registerGroup && isValidGroupFolder(HUB_ROOM_FOLDER)) {
         channelOpts.registerGroup(jid, {
           name: 'Contact Hub',
@@ -465,6 +476,9 @@ about contact events, evaluate them and take action.
       const jid = `thenvoi:${roomId}`;
       const content = formatContactEvent(event);
 
+      // Ensure chat exists in SQLite (FK constraint)
+      storeChatMetadata(jid, new Date().toISOString(), 'Contact Hub', 'thenvoi', true);
+
       // Local: store in SQLite so NanoClaw's message loop processes it
       storeMessage({
         id: `contact-evt-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`,
@@ -481,7 +495,7 @@ about contact events, evaluate them and take action.
       try {
         await thenvoiLink.rest.createChatEvent(roomId, {
           content,
-          messageType: 'contact_event',
+          messageType: 'task',
           metadata: { contactEventType: event.type },
         });
       } catch (err) {
