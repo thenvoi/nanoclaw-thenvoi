@@ -6,11 +6,7 @@ import { registerChannel, ChannelOpts } from './registry.js';
 import { readEnvFile } from '../env.js';
 import { resolveGroupFolderPath } from '../group-folder.js';
 import { isValidGroupFolder } from '../group-folder.js';
-import {
-  getRouterState,
-  setRouterState,
-  storeMessage,
-} from '../db.js';
+import { getRouterState, setRouterState, storeMessage } from '../db.js';
 import { Channel, RegisteredGroup } from '../types.js';
 import { logger } from '../logger.js';
 
@@ -172,7 +168,9 @@ registerChannel('thenvoi', (opts) => {
             hubRoomId = null;
             hubRoomInitPromise = null;
             setRouterState(HUB_ROOM_STATE_KEY, '');
-            logger.info('Thenvoi: contact hub room deleted, will re-create on next event');
+            logger.info(
+              'Thenvoi: contact hub room deleted, will re-create on next event',
+            );
           }
         },
 
@@ -252,7 +250,9 @@ registerChannel('thenvoi', (opts) => {
     _agentId: string,
   ): Promise<void> {
     // Deduplication
-    const payload = event.payload as { id?: string; status?: string } | undefined;
+    const payload = event.payload as
+      | { id?: string; status?: string }
+      | undefined;
     const dedupKey = `${event.type}:${payload?.id ?? 'unknown'}${payload?.status ? ':' + payload.status : ''}`;
     if (contactDedup.has(dedupKey)) {
       logger.debug({ dedupKey }, 'Thenvoi: duplicate contact event skipped');
@@ -269,7 +269,10 @@ registerChannel('thenvoi', (opts) => {
     const strategy = THENVOI_CONTACT_STRATEGY;
 
     if (strategy === 'disabled') {
-      logger.warn({ type: event.type, payload: event.payload }, 'Thenvoi: contact event received (strategy=disabled)');
+      logger.warn(
+        { type: event.type, payload: event.payload },
+        'Thenvoi: contact event received (strategy=disabled)',
+      );
       return;
     }
 
@@ -309,7 +312,10 @@ registerChannel('thenvoi', (opts) => {
       const persisted = getRouterState(HUB_ROOM_STATE_KEY);
       if (persisted && channelOpts.registeredGroups()[`thenvoi:${persisted}`]) {
         hubRoomId = persisted;
-        logger.info({ hubRoomId }, 'Thenvoi: reusing existing contact hub room');
+        logger.info(
+          { hubRoomId },
+          'Thenvoi: reusing existing contact hub room',
+        );
         return persisted;
       }
 
@@ -325,7 +331,9 @@ registerChannel('thenvoi', (opts) => {
           const profile = await thenvoiLink.rest.getAgentMe();
           ownerId = (profile as { owner_uuid?: string }).owner_uuid ?? '';
         } catch {
-          logger.warn('Thenvoi: could not auto-derive owner ID from agent profile');
+          logger.warn(
+            'Thenvoi: could not auto-derive owner ID from agent profile',
+          );
         }
       }
 
@@ -336,12 +344,20 @@ registerChannel('thenvoi', (opts) => {
             participantId: ownerId,
             role: 'member',
           });
-          logger.info({ ownerId, hubRoomId: newRoomId }, 'Thenvoi: owner added to contact hub room');
+          logger.info(
+            { ownerId, hubRoomId: newRoomId },
+            'Thenvoi: owner added to contact hub room',
+          );
         } catch (err) {
-          logger.warn({ err, ownerId }, 'Thenvoi: failed to add owner to contact hub room');
+          logger.warn(
+            { err, ownerId },
+            'Thenvoi: failed to add owner to contact hub room',
+          );
         }
       } else {
-        logger.warn('Thenvoi: THENVOI_OWNER_ID not set and auto-derive failed — owner will not see hub room');
+        logger.warn(
+          'Thenvoi: THENVOI_OWNER_ID not set and auto-derive failed — owner will not see hub room',
+        );
       }
 
       // Persist hub room ID
@@ -366,7 +382,10 @@ registerChannel('thenvoi', (opts) => {
       await thenvoiLink.subscribeRoom(newRoomId);
 
       hubRoomId = newRoomId;
-      logger.info({ hubRoomId: newRoomId }, 'Thenvoi: contact hub room created');
+      logger.info(
+        { hubRoomId: newRoomId },
+        'Thenvoi: contact hub room created',
+      );
       return newRoomId;
     })();
 
@@ -386,7 +405,9 @@ registerChannel('thenvoi', (opts) => {
       if (fs.existsSync(claudeMdPath)) return;
 
       fs.mkdirSync(path.join(groupDir, 'logs'), { recursive: true });
-      fs.writeFileSync(claudeMdPath, `# Contact Management Hub
+      fs.writeFileSync(
+        claudeMdPath,
+        `# Contact Management Hub
 
 You manage contact requests for this agent. When you receive messages
 about contact events, evaluate them and take action.
@@ -402,7 +423,8 @@ about contact events, evaluate them and take action.
 - Report your decisions via \`thenvoi_send_message\`
 - Do NOT add/remove participants in this room
 - Do NOT delegate to other agents
-`);
+`,
+      );
     } catch (err) {
       logger.warn({ err }, 'Thenvoi: failed to write hub room CLAUDE.md');
     }
@@ -435,7 +457,11 @@ about contact events, evaluate them and take action.
     thenvoiAgentId: string,
   ): Promise<void> {
     try {
-      const roomId = await ensureHubRoom(thenvoiLink, channelOpts, thenvoiAgentId);
+      const roomId = await ensureHubRoom(
+        thenvoiLink,
+        channelOpts,
+        thenvoiAgentId,
+      );
       const jid = `thenvoi:${roomId}`;
       const content = formatContactEvent(event);
 
@@ -459,12 +485,21 @@ about contact events, evaluate them and take action.
           metadata: { contactEventType: event.type },
         });
       } catch (err) {
-        logger.warn({ err, roomId }, 'Thenvoi: failed to persist contact event to platform');
+        logger.warn(
+          { err, roomId },
+          'Thenvoi: failed to persist contact event to platform',
+        );
       }
 
-      logger.info({ type: event.type, hubRoomId: roomId }, 'Thenvoi: contact event injected into hub room');
+      logger.info(
+        { type: event.type, hubRoomId: roomId },
+        'Thenvoi: contact event injected into hub room',
+      );
     } catch (err) {
-      logger.error({ err, type: event.type }, 'Thenvoi: hub room strategy failed');
+      logger.error(
+        { err, type: event.type },
+        'Thenvoi: hub room strategy failed',
+      );
     }
   }
 
@@ -474,21 +509,36 @@ about contact events, evaluate them and take action.
     thenvoiLink: ThenvoiLink,
   ): Promise<void> {
     if (event.type === 'contact_request_received') {
-      const payload = event.payload as { id: string; from_handle?: string; from_name?: string };
+      const payload = event.payload as {
+        id: string;
+        from_handle?: string;
+        from_name?: string;
+      };
       logger.info(
         { requestId: payload.id, from: payload.from_handle },
         'Thenvoi: auto-approving contact request (callback strategy)',
       );
       try {
-        await thenvoiLink.rest.respondContactRequest!(
-          { action: 'approve', target: 'requestId', requestId: payload.id },
+        await thenvoiLink.rest.respondContactRequest!({
+          action: 'approve',
+          target: 'requestId',
+          requestId: payload.id,
+        });
+        logger.info(
+          { requestId: payload.id },
+          'Thenvoi: contact request auto-approved',
         );
-        logger.info({ requestId: payload.id }, 'Thenvoi: contact request auto-approved');
       } catch (err) {
-        logger.error({ err, requestId: payload.id }, 'Thenvoi: failed to auto-approve contact request');
+        logger.error(
+          { err, requestId: payload.id },
+          'Thenvoi: failed to auto-approve contact request',
+        );
       }
     } else {
-      logger.info({ type: event.type }, 'Thenvoi: contact event (callback strategy)');
+      logger.info(
+        { type: event.type },
+        'Thenvoi: contact event (callback strategy)',
+      );
     }
   }
 

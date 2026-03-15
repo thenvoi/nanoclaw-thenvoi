@@ -6,9 +6,7 @@ let onExecuteCallback:
   | ((context: unknown, event: unknown) => Promise<void>)
   | null = null;
 let onSessionCleanupCallback: ((roomId: string) => Promise<void>) | null = null;
-let onContactEventCallback:
-  | ((event: unknown) => Promise<void>)
-  | null = null;
+let onContactEventCallback: ((event: unknown) => Promise<void>) | null = null;
 
 const mockRuntime = {
   start: vi.fn().mockResolvedValue(undefined),
@@ -349,7 +347,12 @@ describe('Thenvoi Channel', () => {
       // Should not throw
       await onContactEventCallback!({
         type: 'contact_request_received',
-        payload: { id: 'req-1', from_handle: 'alice', from_name: 'Alice', status: 'pending' },
+        payload: {
+          id: 'req-1',
+          from_handle: 'alice',
+          from_name: 'Alice',
+          status: 'pending',
+        },
       });
     });
   });
