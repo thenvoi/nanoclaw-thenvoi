@@ -104,6 +104,43 @@ Sync to container environment:
 mkdir -p data/env && cp .env data/env/env
 ```
 
+### Check agent name
+
+Fetch the agent's name from the platform:
+
+```bash
+curl -s -H "x-api-key: <their-api-key>" "<their-base-url>/api/v1/agent/me" | python3 -c "import sys,json; d=json.load(sys.stdin).get('data',{}); print(f'Platform name: {d.get(\"name\")}')"
+```
+
+Read the current NanoClaw assistant name from `.env`:
+
+```bash
+grep ASSISTANT_NAME .env || echo "ASSISTANT_NAME not set (default: Andy)"
+```
+
+If the names differ (e.g., platform says "Nanoclaw" but NanoClaw uses "Andy"):
+
+AskUserQuestion: Your agent is registered as **{platform_name}** on the Thenvoi Platform, but NanoClaw currently uses **{current_name}** as its identity. Would you like to:
+
+1. **Keep "{current_name}"** — the agent will introduce itself as {current_name} on all channels including Thenvoi
+2. **Change to "{platform_name}"** — update ASSISTANT_NAME in .env and the agent identity in CLAUDE.md to match the platform
+
+Note: This changes the name for ALL channels (WhatsApp, Telegram, etc.), not just Thenvoi. The trigger pattern (@mention) will also change.
+
+If the user chooses to change:
+
+1. Update `ASSISTANT_NAME` in `.env`:
+   ```bash
+   # Replace existing ASSISTANT_NAME or add it
+   sed -i '' "s/^ASSISTANT_NAME=.*/ASSISTANT_NAME=<platform_name>/" .env || echo "ASSISTANT_NAME=<platform_name>" >> .env
+   ```
+
+2. Update the agent identity in `groups/global/CLAUDE.md` (if it exists) — replace "You are Andy" with "You are {platform_name}" in the first line.
+
+3. Update `groups/main/CLAUDE.md` (if it exists) — same replacement.
+
+If the names already match, skip this step.
+
 ### Add agent to platform chat rooms
 
 > Before NanoClaw can receive messages, you need to add the agent to chat rooms on the platform:
