@@ -26,6 +26,7 @@ import {
   stopContainer,
 } from './container-runtime.js';
 import { detectAuthMode } from './credential-proxy.js';
+import { readEnvFile } from './env.js';
 import { validateAdditionalMounts } from './mount-security.js';
 import { RegisteredGroup } from './types.js';
 
@@ -215,6 +216,7 @@ function buildVolumeMounts(
 function buildContainerArgs(
   mounts: VolumeMount[],
   containerName: string,
+  input: ContainerInput,
 ): string[] {
   const args: string[] = ['run', '-i', '--rm', '--name', containerName];
 
@@ -236,6 +238,18 @@ function buildContainerArgs(
     args.push('-e', 'ANTHROPIC_API_KEY=placeholder');
   } else {
     args.push('-e', 'CLAUDE_CODE_OAUTH_TOKEN=placeholder');
+  }
+
+  // Thenvoi platform: pass channel info and proxied REST URL
+  if (input.chatJid.startsWith('thenvoi:')) {
+    const thenvoiEnv = readEnvFile(['THENVOI_AGENT_ID']);
+    const roomId = input.chatJid.replace('thenvoi:', '');
+    args.push(
+      '-e', 'NANOCLAW_CHANNEL=thenvoi',
+      '-e', `THENVOI_ROOM_ID=${roomId}`,
+      '-e', `THENVOI_AGENT_ID=${thenvoiEnv.THENVOI_AGENT_ID || ''}`,
+      '-e', `THENVOI_REST_URL=http://${CONTAINER_HOST_GATEWAY}:${CREDENTIAL_PROXY_PORT}/thenvoi`,
+    );
   }
 
   // Runtime-specific args for host gateway resolution
@@ -278,7 +292,7 @@ export async function runContainerAgent(
   const mounts = buildVolumeMounts(group, input.isMain);
   const safeName = group.folder.replace(/[^a-zA-Z0-9-]/g, '-');
   const containerName = `nanoclaw-${safeName}-${Date.now()}`;
-  const containerArgs = buildContainerArgs(mounts, containerName);
+  const containerArgs = buildContainerArgs(mounts, containerName, input);
 
   logger.debug(
     {

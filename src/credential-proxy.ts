@@ -32,6 +32,8 @@ export function startCredentialProxy(
     'CLAUDE_CODE_OAUTH_TOKEN',
     'ANTHROPIC_AUTH_TOKEN',
     'ANTHROPIC_BASE_URL',
+    'THENVOI_BASE_URL',
+    'THENVOI_API_KEY',
   ]);
 
   const authMode: AuthMode = secrets.ANTHROPIC_API_KEY ? 'api-key' : 'oauth';
@@ -44,16 +46,30 @@ export function startCredentialProxy(
   const isHttps = upstreamUrl.protocol === 'https:';
   const makeRequest = isHttps ? httpsRequest : httpRequest;
 
+  // Thenvoi platform proxy target
+  const thenvoiBaseUrl = secrets.THENVOI_BASE_URL
+    ? new URL(secrets.THENVOI_BASE_URL)
+    : null;
+  const thenvoiApiKey = secrets.THENVOI_API_KEY;
+
   return new Promise((resolve, reject) => {
     const server = createServer((req, res) => {
       const chunks: Buffer[] = [];
       req.on('data', (c) => chunks.push(c));
       req.on('end', () => {
         const body = Buffer.concat(chunks);
+        const isThenvoi = req.url?.startsWith('/thenvoi/');
+
+        // Determine upstream target
+        const targetUrl = isThenvoi && thenvoiBaseUrl ? thenvoiBaseUrl : upstreamUrl;
+        const targetIsHttps = targetUrl.protocol === 'https:';
+        const targetRequest = targetIsHttps ? httpsRequest : httpRequest;
+        const targetPath = isThenvoi ? req.url!.replace('/thenvoi', '') : req.url;
+
         const headers: Record<string, string | number | string[] | undefined> =
           {
             ...(req.headers as Record<string, string>),
-            host: upstreamUrl.host,
+            host: targetUrl.host,
             'content-length': body.length,
           };
 
@@ -62,7 +78,17 @@ export function startCredentialProxy(
         delete headers['keep-alive'];
         delete headers['transfer-encoding'];
 
-        if (authMode === 'api-key') {
+        if (isThenvoi) {
+          if (thenvoiApiKey) {
+            // Thenvoi mode: inject API key via x-api-key header
+            delete headers['authorization'];
+            delete headers['x-api-key'];
+            headers['x-api-key'] = thenvoiApiKey;
+            logger.info({ path: targetPath, method: req.method }, 'Proxy: Thenvoi request');
+          } else {
+            logger.warn({ path: targetPath }, 'Proxy: Thenvoi request but no API key configured');
+          }
+        } else if (authMode === 'api-key') {
           // API key mode: inject x-api-key on every request
           delete headers['x-api-key'];
           headers['x-api-key'] = secrets.ANTHROPIC_API_KEY;
@@ -79,11 +105,11 @@ export function startCredentialProxy(
           }
         }
 
-        const upstream = makeRequest(
+        const upstream = targetRequest(
           {
-            hostname: upstreamUrl.hostname,
-            port: upstreamUrl.port || (isHttps ? 443 : 80),
-            path: req.url,
+            hostname: targetUrl.hostname,
+            port: targetUrl.port || (targetIsHttps ? 443 : 80),
+            path: targetPath,
             method: req.method,
             headers,
           } as RequestOptions,

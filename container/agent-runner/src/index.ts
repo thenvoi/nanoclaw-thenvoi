@@ -373,6 +373,63 @@ async function runQuery(
     globalClaudeMd = fs.readFileSync(globalClaudeMdPath, 'utf-8');
   }
 
+  // Thenvoi platform: append instructions that teach the agent to use platform tools
+  if (process.env.NANOCLAW_CHANNEL === 'thenvoi') {
+    const platformInstructions = `
+## Thenvoi Platform Environment
+
+You are connected to the Thenvoi AI Platform. This is a multi-participant chat room.
+Messages show sender as [Name]: content. Messages prefixed with [System]: are platform updates.
+
+**CRITICAL: Use tools to communicate.** Plain text output is NOT delivered to users.
+You MUST use \`thenvoi_send_message(content, mentions)\` to respond.
+Mentions use handles: @<username> for users, @<username>/<agent-name> for agents.
+Call \`thenvoi_get_participants()\` to see who is in the room and their handles.
+
+## CRITICAL: Always Share Your Thinking
+
+You MUST call \`thenvoi_send_event(content, message_type="thought")\` BEFORE every action.
+This lets users see your reasoning process.
+
+## CRITICAL: Delegate When You Cannot Help Directly
+
+When asked about something you can't answer directly:
+1. Call \`thenvoi_lookup_peers()\` to find available specialized agents
+2. If a relevant agent exists, call \`thenvoi_add_participant(name="Agent Name")\` to add them
+3. Ask that agent using \`thenvoi_send_message(content, mentions=["@handle"])\`
+4. Wait for their response and relay it back to the user
+
+NEVER say "I can't do that" without first checking if another agent can help.
+
+## CRITICAL: Do NOT Remove Agents Automatically
+
+After adding an agent to help with a task, do NOT remove them. They stay silent unless mentioned.
+
+## Examples
+
+### Simple question — answer directly
+[John Doe]: What's 2+2?
+-> thenvoi_send_event(content="Simple arithmetic, answering directly.", message_type="thought")
+-> thenvoi_send_message(content="4", mentions=["@john"])
+
+### Delegation to another agent
+[John Doe]: What's the weather in Tokyo?
+-> thenvoi_send_event(content="I can't check weather. Looking for a weather agent.", message_type="thought")
+-> thenvoi_lookup_peers()
+-> thenvoi_send_event(content="Found Weather Agent. Adding to room.", message_type="thought")
+-> thenvoi_add_participant(name="Weather Agent")
+-> thenvoi_send_message(content="What's the weather in Tokyo?", mentions=["@john/weather-agent"])
+
+### Relaying response back
+[Weather Agent]: Tokyo is 15°C and cloudy.
+-> thenvoi_send_event(content="Got weather response. Relaying back to John.", message_type="thought")
+-> thenvoi_send_message(content="The weather in Tokyo is 15°C and cloudy.", mentions=["@john"])
+`;
+    globalClaudeMd = globalClaudeMd
+      ? globalClaudeMd + '\n' + platformInstructions
+      : platformInstructions;
+  }
+
   // Discover additional directories mounted at /workspace/extra/*
   // These are passed to the SDK so their CLAUDE.md files are loaded automatically
   const extraDirs: string[] = [];
@@ -421,6 +478,13 @@ async function runQuery(
             NANOCLAW_CHAT_JID: containerInput.chatJid,
             NANOCLAW_GROUP_FOLDER: containerInput.groupFolder,
             NANOCLAW_IS_MAIN: containerInput.isMain ? '1' : '0',
+            // Thenvoi platform tools (passed through from container env)
+            ...(process.env.NANOCLAW_CHANNEL === 'thenvoi' ? {
+              NANOCLAW_CHANNEL: 'thenvoi',
+              THENVOI_REST_URL: process.env.THENVOI_REST_URL || '',
+              THENVOI_ROOM_ID: process.env.THENVOI_ROOM_ID || '',
+              THENVOI_AGENT_ID: process.env.THENVOI_AGENT_ID || '',
+            } : {}),
           },
         },
       },

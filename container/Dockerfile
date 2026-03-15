@@ -36,10 +36,11 @@ RUN npm install -g agent-browser @anthropic-ai/claude-code
 # Create app directory
 WORKDIR /app
 
-# Copy package files first for better caching
+# Copy package files and vendored SDKs first for better caching
 COPY agent-runner/package*.json ./
+COPY agent-runner/vendor/ ./vendor/
 
-# Install dependencies
+# Install dependencies (includes vendored @thenvoi/sdk and @thenvoi/rest-client)
 RUN npm install
 
 # Copy source code
