@@ -61,10 +61,13 @@ export function startCredentialProxy(
         const isThenvoi = req.url?.startsWith('/thenvoi/');
 
         // Determine upstream target
-        const targetUrl = isThenvoi && thenvoiBaseUrl ? thenvoiBaseUrl : upstreamUrl;
+        const targetUrl =
+          isThenvoi && thenvoiBaseUrl ? thenvoiBaseUrl : upstreamUrl;
         const targetIsHttps = targetUrl.protocol === 'https:';
         const targetRequest = targetIsHttps ? httpsRequest : httpRequest;
-        const targetPath = isThenvoi ? req.url!.replace('/thenvoi', '') : req.url;
+        const targetPath = isThenvoi
+          ? req.url!.replace('/thenvoi', '')
+          : req.url;
 
         const headers: Record<string, string | number | string[] | undefined> =
           {
@@ -84,9 +87,15 @@ export function startCredentialProxy(
             delete headers['authorization'];
             delete headers['x-api-key'];
             headers['x-api-key'] = thenvoiApiKey;
-            logger.info({ path: targetPath, method: req.method }, 'Proxy: Thenvoi request');
+            logger.info(
+              { path: targetPath, method: req.method },
+              'Proxy: Thenvoi request',
+            );
           } else {
-            logger.warn({ path: targetPath }, 'Proxy: Thenvoi request but no API key configured');
+            logger.warn(
+              { path: targetPath },
+              'Proxy: Thenvoi request but no API key configured',
+            );
           }
         } else if (authMode === 'api-key') {
           // API key mode: inject x-api-key on every request

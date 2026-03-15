@@ -245,10 +245,14 @@ function buildContainerArgs(
     const thenvoiEnv = readEnvFile(['THENVOI_AGENT_ID']);
     const roomId = input.chatJid.replace('thenvoi:', '');
     args.push(
-      '-e', 'NANOCLAW_CHANNEL=thenvoi',
-      '-e', `THENVOI_ROOM_ID=${roomId}`,
-      '-e', `THENVOI_AGENT_ID=${thenvoiEnv.THENVOI_AGENT_ID || ''}`,
-      '-e', `THENVOI_REST_URL=http://${CONTAINER_HOST_GATEWAY}:${CREDENTIAL_PROXY_PORT}/thenvoi`,
+      '-e',
+      'NANOCLAW_CHANNEL=thenvoi',
+      '-e',
+      `THENVOI_ROOM_ID=${roomId}`,
+      '-e',
+      `THENVOI_AGENT_ID=${thenvoiEnv.THENVOI_AGENT_ID || ''}`,
+      '-e',
+      `THENVOI_REST_URL=http://${CONTAINER_HOST_GATEWAY}:${CREDENTIAL_PROXY_PORT}/thenvoi`,
     );
   }
 

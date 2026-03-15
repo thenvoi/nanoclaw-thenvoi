@@ -27,7 +27,10 @@ function ensureGroupRegistered(
 
   const folder = roomFolder(roomId);
   if (!isValidGroupFolder(folder)) {
-    logger.warn({ jid, folder }, 'Thenvoi: invalid folder name, skipping registration');
+    logger.warn(
+      { jid, folder },
+      'Thenvoi: invalid folder name, skipping registration',
+    );
     return;
   }
 
@@ -47,10 +50,11 @@ registerChannel('thenvoi', (opts) => {
   const baseUrl = process.env.THENVOI_BASE_URL || env.THENVOI_BASE_URL;
   if (!agentId || !apiKey || !baseUrl) return null;
 
-  const wsUrl = baseUrl
-    .replace(/^https:/, 'wss:')
-    .replace(/^http:/, 'ws:')
-    .replace(/\/$/, '') + '/api/v1/socket/websocket';
+  const wsUrl =
+    baseUrl
+      .replace(/^https:/, 'wss:')
+      .replace(/^http:/, 'ws:')
+      .replace(/\/$/, '') + '/api/v1/socket/websocket';
 
   let link: ThenvoiLink;
   let runtime: AgentRuntime;
@@ -117,18 +121,24 @@ registerChannel('thenvoi', (opts) => {
             await link.rest.markMessageProcessing(roomId, p.id);
             await link.rest.markMessageProcessed(roomId, p.id);
           } catch (err) {
-            logger.warn({ err, roomId, messageId: p.id }, 'Thenvoi: failed to mark message status');
+            logger.warn(
+              { err, roomId, messageId: p.id },
+              'Thenvoi: failed to mark message status',
+            );
           }
         },
 
         onRoomJoined(roomId, payload) {
           activeRoomIds.add(roomId);
           const jid = `thenvoi:${roomId}`;
-          const title = typeof payload?.title === 'string' ? payload.title : undefined;
+          const title =
+            typeof payload?.title === 'string' ? payload.title : undefined;
           ensureGroupRegistered(jid, roomId, title, opts);
           opts.onChatMetadata(
             jid,
-            typeof payload?.inserted_at === 'string' ? payload.inserted_at : new Date().toISOString(),
+            typeof payload?.inserted_at === 'string'
+              ? payload.inserted_at
+              : new Date().toISOString(),
             title,
             'thenvoi',
             true,
@@ -144,14 +154,21 @@ registerChannel('thenvoi', (opts) => {
         },
 
         onError(error, event) {
-          logger.error({ err: error, eventType: event.type }, 'Thenvoi runtime error');
+          logger.error(
+            { err: error, eventType: event.type },
+            'Thenvoi runtime error',
+          );
         },
 
         logger: {
-          debug: (msg: string, meta?: unknown) => logger.debug(meta, `Thenvoi: ${msg}`),
-          info: (msg: string, meta?: unknown) => logger.info(meta, `Thenvoi: ${msg}`),
-          warn: (msg: string, meta?: unknown) => logger.warn(meta, `Thenvoi: ${msg}`),
-          error: (msg: string, meta?: unknown) => logger.error(meta, `Thenvoi: ${msg}`),
+          debug: (msg: string, meta?: unknown) =>
+            logger.debug(meta, `Thenvoi: ${msg}`),
+          info: (msg: string, meta?: unknown) =>
+            logger.info(meta, `Thenvoi: ${msg}`),
+          warn: (msg: string, meta?: unknown) =>
+            logger.warn(meta, `Thenvoi: ${msg}`),
+          error: (msg: string, meta?: unknown) =>
+            logger.error(meta, `Thenvoi: ${msg}`),
         },
       });
 
@@ -167,14 +184,20 @@ registerChannel('thenvoi', (opts) => {
         }
       }
 
-      logger.info({ baseUrl, activeRooms: activeRoomIds.size }, 'Thenvoi channel connected');
+      logger.info(
+        { baseUrl, activeRooms: activeRoomIds.size },
+        'Thenvoi channel connected',
+      );
     },
 
     async sendMessage(jid: string, _text: string) {
       // Thenvoi agents communicate via platform tools (thenvoi_send_message)
       // inside the container. Stdout is suppressed for Thenvoi groups, so this
       // should never be called. If it is, log a warning.
-      logger.warn({ jid }, 'Thenvoi: sendMessage called unexpectedly — agent should use platform tools');
+      logger.warn(
+        { jid },
+        'Thenvoi: sendMessage called unexpectedly — agent should use platform tools',
+      );
     },
 
     isConnected: () => link?.isConnected?.() ?? false,

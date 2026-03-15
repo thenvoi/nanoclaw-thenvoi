@@ -2,7 +2,9 @@ import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 
 // --- Mock AgentRuntime ---
 
-let onExecuteCallback: ((context: unknown, event: unknown) => Promise<void>) | null = null;
+let onExecuteCallback:
+  | ((context: unknown, event: unknown) => Promise<void>)
+  | null = null;
 let onSessionCleanupCallback: ((roomId: string) => Promise<void>) | null = null;
 
 const mockRuntime = {
@@ -18,7 +20,9 @@ const mockLink = {
 };
 
 vi.mock('@thenvoi/sdk', () => ({
-  ThenvoiLink: vi.fn().mockImplementation(function () { return mockLink; }),
+  ThenvoiLink: vi.fn().mockImplementation(function () {
+    return mockLink;
+  }),
   AgentRuntime: vi.fn().mockImplementation(function (opts: {
     onExecute: (ctx: unknown, ev: unknown) => Promise<void>;
     onSessionCleanup?: (roomId: string) => Promise<void>;
@@ -54,7 +58,11 @@ describe('Thenvoi Channel', () => {
   const registeredGroups = vi.fn().mockReturnValue({});
 
   function createChannel() {
-    return getChannelFactory('thenvoi')!({ onMessage, onChatMetadata, registeredGroups });
+    return getChannelFactory('thenvoi')!({
+      onMessage,
+      onChatMetadata,
+      registeredGroups,
+    });
   }
 
   beforeEach(() => {
