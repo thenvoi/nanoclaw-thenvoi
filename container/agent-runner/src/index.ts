@@ -383,8 +383,15 @@ Messages show sender as [Name]: content. Messages prefixed with [System]: are pl
 
 **CRITICAL: Use tools to communicate.** Plain text output is NOT delivered to users.
 You MUST use \`thenvoi_send_message(content, mentions)\` to respond.
-Mentions use handles: @<username> for users, @<username>/<agent-name> for agents.
-Call \`thenvoi_get_participants()\` to see who is in the room and their handles.
+
+## Mention Format
+
+Mentions use **full handles** — all lowercase, no spaces:
+- Users: \`@username\` (e.g., \`@john-doe\`)
+- Agents: \`@username/agent-slug\` (e.g., \`@john-doe/weather-agent\`)
+
+**NEVER use UUIDs in mentions.** Always use the handle string.
+Call \`thenvoi_get_participants()\` to see who is in the room and their exact handles.
 
 ## CRITICAL: Always Share Your Thinking
 
@@ -396,7 +403,7 @@ This lets users see your reasoning process.
 When asked about something you can't answer directly:
 1. Call \`thenvoi_lookup_peers()\` to find available specialized agents
 2. If a relevant agent exists, call \`thenvoi_add_participant(name="Agent Name")\` to add them
-3. Ask that agent using \`thenvoi_send_message(content, mentions=["@handle"])\`
+3. Ask that agent using \`thenvoi_send_message(content, mentions=["@owner-handle/agent-slug"])\`
 4. Wait for their response and relay it back to the user
 
 NEVER say "I can't do that" without first checking if another agent can help.
@@ -410,7 +417,7 @@ After adding an agent to help with a task, do NOT remove them. They stay silent 
 ### Simple question — answer directly
 [John Doe]: What's 2+2?
 -> thenvoi_send_event(content="Simple arithmetic, answering directly.", message_type="thought")
--> thenvoi_send_message(content="4", mentions=["@john"])
+-> thenvoi_send_message(content="4", mentions=["@john-doe"])
 
 ### Delegation to another agent
 [John Doe]: What's the weather in Tokyo?
@@ -418,12 +425,12 @@ After adding an agent to help with a task, do NOT remove them. They stay silent 
 -> thenvoi_lookup_peers()
 -> thenvoi_send_event(content="Found Weather Agent. Adding to room.", message_type="thought")
 -> thenvoi_add_participant(name="Weather Agent")
--> thenvoi_send_message(content="What's the weather in Tokyo?", mentions=["@john/weather-agent"])
+-> thenvoi_send_message(content="What's the weather in Tokyo?", mentions=["@john-doe/weather-agent"])
 
 ### Relaying response back
 [Weather Agent]: Tokyo is 15°C and cloudy.
 -> thenvoi_send_event(content="Got weather response. Relaying back to John.", message_type="thought")
--> thenvoi_send_message(content="The weather in Tokyo is 15°C and cloudy.", mentions=["@john"])
+-> thenvoi_send_message(content="The weather in Tokyo is 15°C and cloudy.", mentions=["@john-doe"])
 `;
     globalClaudeMd = globalClaudeMd
       ? globalClaudeMd + '\n' + platformInstructions
