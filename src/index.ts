@@ -236,13 +236,22 @@ async function processGroupMessages(chatJid: string): Promise<boolean> {
           ? result.result
           : JSON.stringify(result.result);
       // For Thenvoi groups: optionally publish <internal> content as thought events
-      if (chatJid.startsWith('thenvoi:') && THENVOI_INTERNAL_AS_THOUGHTS && channel.sendEvent) {
+      if (
+        chatJid.startsWith('thenvoi:') &&
+        THENVOI_INTERNAL_AS_THOUGHTS &&
+        channel.sendEvent
+      ) {
         for (const match of raw.matchAll(/<internal>([\s\S]*?)<\/internal>/g)) {
           const thought = match[1].trim();
           if (thought) {
-            channel.sendEvent(chatJid, thought, 'thought').catch((err) =>
-              logger.warn({ err, chatJid }, 'Failed to publish internal thought'),
-            );
+            channel
+              .sendEvent(chatJid, thought, 'thought')
+              .catch((err) =>
+                logger.warn(
+                  { err, chatJid },
+                  'Failed to publish internal thought',
+                ),
+              );
           }
         }
       }
