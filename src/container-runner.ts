@@ -242,7 +242,12 @@ function buildContainerArgs(
 
   // Thenvoi platform: pass channel info and proxied REST URL
   if (input.chatJid.startsWith('thenvoi:')) {
-    const thenvoiEnv = readEnvFile(['THENVOI_AGENT_ID']);
+    const thenvoiEnv = readEnvFile([
+      'THENVOI_AGENT_ID',
+      'THENVOI_MEMORY_TOOLS',
+      'THENVOI_MEMORY_LOAD_ON_START',
+      'THENVOI_MEMORY_CONSOLIDATION',
+    ]);
     const roomId = input.chatJid.replace('thenvoi:', '');
     args.push(
       '-e',
@@ -253,6 +258,12 @@ function buildContainerArgs(
       `THENVOI_AGENT_ID=${thenvoiEnv.THENVOI_AGENT_ID || ''}`,
       '-e',
       `THENVOI_REST_URL=http://${CONTAINER_HOST_GATEWAY}:${CREDENTIAL_PROXY_PORT}/thenvoi`,
+      '-e',
+      `THENVOI_MEMORY_TOOLS=${thenvoiEnv.THENVOI_MEMORY_TOOLS || 'false'}`,
+      '-e',
+      `THENVOI_MEMORY_LOAD_ON_START=${thenvoiEnv.THENVOI_MEMORY_LOAD_ON_START || 'false'}`,
+      '-e',
+      `THENVOI_MEMORY_CONSOLIDATION=${thenvoiEnv.THENVOI_MEMORY_CONSOLIDATION || 'false'}`,
     );
   }
 

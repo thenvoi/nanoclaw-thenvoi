@@ -12,6 +12,9 @@ const envConfig = readEnvFile([
   'THENVOI_CONTACT_STRATEGY',
   'THENVOI_OWNER_ID',
   'THENVOI_INTERNAL_AS_THOUGHTS',
+  'THENVOI_MEMORY_TOOLS',
+  'THENVOI_MEMORY_LOAD_ON_START',
+  'THENVOI_MEMORY_CONSOLIDATION',
 ]);
 
 export const ASSISTANT_NAME =
@@ -34,6 +37,14 @@ export const THENVOI_OWNER_ID =
 export const THENVOI_INTERNAL_AS_THOUGHTS =
   (process.env.THENVOI_INTERNAL_AS_THOUGHTS ||
     envConfig.THENVOI_INTERNAL_AS_THOUGHTS) === 'true';
+
+// Memory integration (all default: false)
+export const THENVOI_MEMORY_TOOLS =
+  (process.env.THENVOI_MEMORY_TOOLS || envConfig.THENVOI_MEMORY_TOOLS) === 'true';
+export const THENVOI_MEMORY_LOAD_ON_START =
+  (process.env.THENVOI_MEMORY_LOAD_ON_START || envConfig.THENVOI_MEMORY_LOAD_ON_START) === 'true';
+export const THENVOI_MEMORY_CONSOLIDATION =
+  (process.env.THENVOI_MEMORY_CONSOLIDATION || envConfig.THENVOI_MEMORY_CONSOLIDATION) === 'true';
 
 export const POLL_INTERVAL = 2000;
 export const SCHEDULER_POLL_INTERVAL = 60000;

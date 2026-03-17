@@ -12,6 +12,7 @@ import {
   AgentTools,
   TOOL_MODELS,
   BASE_TOOL_NAMES,
+  MEMORY_TOOL_NAMES,
   getToolDescription,
 } from '@thenvoi/sdk/runtime';
 
@@ -60,11 +61,20 @@ export function registerThenvoiTools(server: McpServer, config: ThenvoiConfig): 
   const tools = new AgentTools({
     roomId: config.roomId,
     rest,
-    capabilities: { peers: true, contacts: true, memory: false },
+    capabilities: {
+      peers: true,
+      contacts: true,
+      memory: process.env.THENVOI_MEMORY_TOOLS === 'true',
+    },
   });
 
   // Register each platform tool from the SDK's TOOL_MODELS
   const toolsToRegister = new Set(BASE_TOOL_NAMES);
+  if (process.env.THENVOI_MEMORY_TOOLS === 'true') {
+    for (const name of MEMORY_TOOL_NAMES) {
+      toolsToRegister.add(name);
+    }
+  }
 
   for (const toolName of toolsToRegister) {
     const model = TOOL_MODELS[toolName as keyof typeof TOOL_MODELS];

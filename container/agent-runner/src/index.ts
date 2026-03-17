@@ -432,6 +432,35 @@ After adding an agent to help with a task, do NOT remove them. They stay silent 
 -> thenvoi_send_event(content="Got weather response. Relaying back to John.", message_type="thought")
 -> thenvoi_send_message(content="The weather in Tokyo is 15°C and cloudy.", mentions=["@john-doe"])
 `;
+
+    // Add memory guidance when memory tools are enabled
+    if (process.env.THENVOI_MEMORY_TOOLS === 'true') {
+      platformInstructions += `
+
+## Platform Memory
+
+You have access to a persistent memory system shared across sessions and agents.
+Use it to store important information that should survive beyond this conversation.
+
+**When to store memories:**
+- User states a preference → \`thenvoi_store_memory(content, system="long_term", type="semantic", segment="user")\`
+- Important event or decision → \`thenvoi_store_memory(content, system="long_term", type="episodic", segment="user")\`
+- Learned workflow or procedure → \`thenvoi_store_memory(content, system="long_term", type="procedural", segment="agent")\`
+
+**When NOT to store:**
+- Trivial or temporary information
+- Information already stored (check with \`thenvoi_list_memories()\` first)
+- Raw conversation content (platform already tracks messages)
+
+**Always include a \`thought\` explaining WHY you're storing this memory.**
+**Add descriptive tags in metadata for searchability.**
+**Use \`thenvoi_supersede_memory(memory_id)\` when information changes instead of creating duplicates.**
+
+Local files (\`CLAUDE.md\`, workspace files) are for this group only.
+Platform memories persist across sessions and are visible to other agents in the organization.
+`;
+    }
+
     globalClaudeMd = globalClaudeMd
       ? globalClaudeMd + '\n' + platformInstructions
       : platformInstructions;
@@ -491,6 +520,7 @@ After adding an agent to help with a task, do NOT remove them. They stay silent 
               THENVOI_REST_URL: process.env.THENVOI_REST_URL || '',
               THENVOI_ROOM_ID: process.env.THENVOI_ROOM_ID || '',
               THENVOI_AGENT_ID: process.env.THENVOI_AGENT_ID || '',
+              THENVOI_MEMORY_TOOLS: process.env.THENVOI_MEMORY_TOOLS || '',
             } : {}),
           },
         },
