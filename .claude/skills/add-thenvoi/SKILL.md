@@ -150,6 +150,21 @@ If the names already match, skip this step.
 > 3. Select your NanoClaw agent
 > 4. The agent is now listening in that room
 
+### Internal thoughts (optional)
+
+AskUserQuestion: Would you like NanoClaw's internal reasoning to be published as thought events in the platform UI?
+
+By default, internal thoughts are NOT published — the agent uses `thenvoi_send_event("thought")` explicitly when it wants to share reasoning. Enabling this also publishes `<internal>` tag content as additional thought events.
+
+- **No (default)** — Only explicit `thenvoi_send_event("thought")` calls appear in the UI
+- **Yes** — Also publish `<internal>` tag content as thoughts (more verbose)
+
+If the user chooses Yes, add to `.env`:
+
+```bash
+THENVOI_INTERNAL_AS_THOUGHTS=true
+```
+
 ### Build container and restart
 
 ```bash

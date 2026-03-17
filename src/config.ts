@@ -11,6 +11,7 @@ const envConfig = readEnvFile([
   'ASSISTANT_HAS_OWN_NUMBER',
   'THENVOI_CONTACT_STRATEGY',
   'THENVOI_OWNER_ID',
+  'THENVOI_INTERNAL_AS_THOUGHTS',
 ]);
 
 export const ASSISTANT_NAME =
@@ -28,6 +29,11 @@ export const THENVOI_CONTACT_STRATEGY =
 // Thenvoi platform owner user ID (auto-derived from agent profile if not set)
 export const THENVOI_OWNER_ID =
   process.env.THENVOI_OWNER_ID || envConfig.THENVOI_OWNER_ID || '';
+
+// Publish <internal> tag content as thought events on the platform (default: false)
+export const THENVOI_INTERNAL_AS_THOUGHTS =
+  (process.env.THENVOI_INTERNAL_AS_THOUGHTS ||
+    envConfig.THENVOI_INTERNAL_AS_THOUGHTS) === 'true';
 
 export const POLL_INTERVAL = 2000;
 export const SCHEDULER_POLL_INTERVAL = 60000;

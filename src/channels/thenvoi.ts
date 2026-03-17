@@ -234,6 +234,15 @@ registerChannel('thenvoi', (opts) => {
       );
     },
 
+    async sendEvent(jid: string, content: string, messageType: string) {
+      const roomId = jid.replace('thenvoi:', '');
+      try {
+        await link.rest.createChatEvent(roomId, { content, messageType });
+      } catch (err) {
+        logger.warn({ err, jid }, 'Thenvoi: failed to send event');
+      }
+    },
+
     isConnected: () => link?.isConnected?.() ?? false,
     ownsJid: (jid: string) => jid.startsWith('thenvoi:'),
 
@@ -320,8 +329,17 @@ registerChannel('thenvoi', (opts) => {
         if (existing && existing.folder === HUB_ROOM_FOLDER) {
           hubRoomId = persisted;
           // Ensure chat metadata exists (FK constraint)
-          storeChatMetadata(`thenvoi:${persisted}`, new Date().toISOString(), 'Contact Hub', 'thenvoi', true);
-          logger.info({ hubRoomId }, 'Thenvoi: reusing existing contact hub room');
+          storeChatMetadata(
+            `thenvoi:${persisted}`,
+            new Date().toISOString(),
+            'Contact Hub',
+            'thenvoi',
+            true,
+          );
+          logger.info(
+            { hubRoomId },
+            'Thenvoi: reusing existing contact hub room',
+          );
           return persisted;
         }
         // Stale ID — wrong folder or not registered
@@ -375,7 +393,13 @@ registerChannel('thenvoi', (opts) => {
 
       // Register as NanoClaw group and ensure chat metadata (FK constraint)
       const jid = `thenvoi:${newRoomId}`;
-      storeChatMetadata(jid, new Date().toISOString(), 'Contact Hub', 'thenvoi', true);
+      storeChatMetadata(
+        jid,
+        new Date().toISOString(),
+        'Contact Hub',
+        'thenvoi',
+        true,
+      );
       if (channelOpts.registerGroup && isValidGroupFolder(HUB_ROOM_FOLDER)) {
         channelOpts.registerGroup(jid, {
           name: 'Contact Hub',
@@ -477,7 +501,13 @@ about contact events, evaluate them and take action.
       const content = formatContactEvent(event);
 
       // Ensure chat exists in SQLite (FK constraint)
-      storeChatMetadata(jid, new Date().toISOString(), 'Contact Hub', 'thenvoi', true);
+      storeChatMetadata(
+        jid,
+        new Date().toISOString(),
+        'Contact Hub',
+        'thenvoi',
+        true,
+      );
 
       // Local: store in SQLite so NanoClaw's message loop processes it
       storeMessage({

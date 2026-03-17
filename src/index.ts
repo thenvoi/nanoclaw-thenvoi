@@ -6,6 +6,7 @@ import {
   CREDENTIAL_PROXY_PORT,
   IDLE_TIMEOUT,
   POLL_INTERVAL,
+  THENVOI_INTERNAL_AS_THOUGHTS,
   TIMEZONE,
   TRIGGER_PATTERN,
 } from './config.js';
@@ -234,6 +235,18 @@ async function processGroupMessages(chatJid: string): Promise<boolean> {
         typeof result.result === 'string'
           ? result.result
           : JSON.stringify(result.result);
+      // For Thenvoi groups: optionally publish <internal> content as thought events
+      if (chatJid.startsWith('thenvoi:') && THENVOI_INTERNAL_AS_THOUGHTS && channel.sendEvent) {
+        for (const match of raw.matchAll(/<internal>([\s\S]*?)<\/internal>/g)) {
+          const thought = match[1].trim();
+          if (thought) {
+            channel.sendEvent(chatJid, thought, 'thought').catch((err) =>
+              logger.warn({ err, chatJid }, 'Failed to publish internal thought'),
+            );
+          }
+        }
+      }
+
       // Strip <internal>...</internal> blocks — agent uses these for internal reasoning
       const text = raw.replace(/<internal>[\s\S]*?<\/internal>/g, '').trim();
       logger.info({ group: group.name }, `Agent output: ${raw.slice(0, 200)}`);
