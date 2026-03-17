@@ -40,11 +40,14 @@ export const THENVOI_INTERNAL_AS_THOUGHTS =
 
 // Memory integration (all default: false)
 export const THENVOI_MEMORY_TOOLS =
-  (process.env.THENVOI_MEMORY_TOOLS || envConfig.THENVOI_MEMORY_TOOLS) === 'true';
+  (process.env.THENVOI_MEMORY_TOOLS || envConfig.THENVOI_MEMORY_TOOLS) ===
+  'true';
 export const THENVOI_MEMORY_LOAD_ON_START =
-  (process.env.THENVOI_MEMORY_LOAD_ON_START || envConfig.THENVOI_MEMORY_LOAD_ON_START) === 'true';
+  (process.env.THENVOI_MEMORY_LOAD_ON_START ||
+    envConfig.THENVOI_MEMORY_LOAD_ON_START) === 'true';
 export const THENVOI_MEMORY_CONSOLIDATION =
-  (process.env.THENVOI_MEMORY_CONSOLIDATION || envConfig.THENVOI_MEMORY_CONSOLIDATION) === 'true';
+  (process.env.THENVOI_MEMORY_CONSOLIDATION ||
+    envConfig.THENVOI_MEMORY_CONSOLIDATION) === 'true';
 
 export const POLL_INTERVAL = 2000;
 export const SCHEDULER_POLL_INTERVAL = 60000;
