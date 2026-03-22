@@ -375,7 +375,7 @@ async function runQuery(
 
   // Thenvoi platform: append instructions that teach the agent to use platform tools
   if (process.env.NANOCLAW_CHANNEL === 'thenvoi') {
-    const platformInstructions = `
+    let platformInstructions = `
 ## Thenvoi Platform Environment
 
 You are connected to the Thenvoi AI Platform. This is a multi-participant chat room.
