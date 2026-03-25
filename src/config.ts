@@ -29,7 +29,7 @@ export const THENVOI_CONTACT_STRATEGY =
   envConfig.THENVOI_CONTACT_STRATEGY ||
   'disabled';
 
-// Thenvoi platform owner user ID (auto-derived from agent profile if not set)
+// Thenvoi platform owner user ID override (SDK identity ownerUuid is used when unset)
 export const THENVOI_OWNER_ID =
   process.env.THENVOI_OWNER_ID || envConfig.THENVOI_OWNER_ID || '';
 

@@ -8,6 +8,12 @@ let onExecuteCallback:
 let onSessionCleanupCallback: ((roomId: string) => Promise<void>) | null = null;
 let onContactEventCallback: ((event: unknown) => Promise<void>) | null = null;
 
+const configMock = vi.hoisted(() => ({
+  ASSISTANT_NAME: 'Andy',
+  THENVOI_CONTACT_STRATEGY: 'disabled',
+  THENVOI_OWNER_ID: '',
+}));
+
 const mockRuntime = {
   start: vi.fn().mockResolvedValue(undefined),
   stop: vi.fn().mockResolvedValue(true),
@@ -15,8 +21,23 @@ const mockRuntime = {
 
 const mockLink = {
   isConnected: vi.fn().mockReturnValue(true),
+  subscribeRoom: vi.fn().mockResolvedValue(undefined),
   rest: {
     createChatMessage: vi.fn().mockResolvedValue({}),
+    createChat: vi.fn().mockResolvedValue({ id: 'hub-room-1' }),
+    addChatParticipant: vi.fn().mockResolvedValue({}),
+    createChatEvent: vi.fn().mockResolvedValue({}),
+    listChats: vi.fn().mockResolvedValue({ data: [], pagination: null }),
+    getAgentMe: vi.fn().mockResolvedValue({
+      id: 'agent-123',
+      name: 'Test Agent',
+      description: null,
+      handle: 'test-agent',
+      ownerUuid: 'owner-from-sdk',
+    }),
+    getNextMessage: vi.fn().mockResolvedValue(null),
+    markMessageProcessing: vi.fn().mockResolvedValue({}),
+    markMessageProcessed: vi.fn().mockResolvedValue({}),
   },
 };
 
@@ -40,9 +61,12 @@ vi.mock('../env.js', () => ({
   readEnvFile: vi.fn().mockReturnValue({}),
 }));
 
+vi.mock('../config.js', () => configMock);
+
 vi.mock('../db.js', () => ({
   setRegisteredGroup: vi.fn(),
   getAllRegisteredGroups: vi.fn().mockReturnValue({}),
+  storeChatMetadata: vi.fn(),
   storeMessage: vi.fn(),
   getRouterState: vi.fn().mockReturnValue(null),
   setRouterState: vi.fn(),
@@ -56,6 +80,7 @@ vi.mock('../group-folder.js', () => ({
 // Must import AFTER mocks
 import { getChannelFactory } from './registry.js';
 import './thenvoi.js';
+import { storeMessage, storeChatMetadata, setRouterState } from '../db.js';
 
 describe('Thenvoi Channel', () => {
   const savedEnv = { ...process.env };
@@ -76,6 +101,9 @@ describe('Thenvoi Channel', () => {
     vi.clearAllMocks();
     onExecuteCallback = null;
     onSessionCleanupCallback = null;
+    onContactEventCallback = null;
+    configMock.THENVOI_CONTACT_STRATEGY = 'disabled';
+    configMock.THENVOI_OWNER_ID = '';
     process.env.THENVOI_AGENT_ID = 'agent-123';
     process.env.THENVOI_API_KEY = 'key-abc';
     process.env.THENVOI_BASE_URL = 'https://test.thenvoi.com';
@@ -354,6 +382,97 @@ describe('Thenvoi Channel', () => {
           status: 'pending',
         },
       });
+    });
+
+    it('creates a hub room and adds the SDK owner when strategy is hub_room', async () => {
+      configMock.THENVOI_CONTACT_STRATEGY = 'hub_room';
+
+      const registerGroupFn = vi.fn();
+      const ch = getChannelFactory('thenvoi')!({
+        onMessage,
+        onChatMetadata,
+        registeredGroups,
+        registerGroup: registerGroupFn,
+      });
+      await ch!.connect();
+
+      await onContactEventCallback!({
+        type: 'contact_request_received',
+        payload: {
+          id: 'req-1',
+          from_handle: 'alice',
+          from_name: 'Alice',
+          message: 'hello',
+        },
+      });
+
+      expect(mockLink.rest.getAgentMe).toHaveBeenCalled();
+      expect(mockLink.rest.createChat).toHaveBeenCalled();
+      expect(mockLink.rest.addChatParticipant).toHaveBeenCalledWith(
+        'hub-room-1',
+        {
+          participantId: 'owner-from-sdk',
+          role: 'member',
+        },
+      );
+      expect(setRouterState).toHaveBeenCalledWith(
+        'thenvoi_contact_hub_room_id',
+        'hub-room-1',
+      );
+      expect(storeChatMetadata).toHaveBeenCalledWith(
+        'thenvoi:hub-room-1',
+        expect.any(String),
+        'Contact Hub',
+        'thenvoi',
+        true,
+      );
+      expect(registerGroupFn).toHaveBeenCalledWith(
+        'thenvoi:hub-room-1',
+        expect.objectContaining({
+          name: 'Contact Hub',
+          folder: 'thenvoi_contacts_hub',
+        }),
+      );
+      expect(storeMessage).toHaveBeenCalledWith(
+        expect.objectContaining({
+          chat_jid: 'thenvoi:hub-room-1',
+          sender: 'contact-events',
+          is_bot_message: false,
+        }),
+      );
+      expect(mockLink.rest.createChatEvent).toHaveBeenCalledWith(
+        'hub-room-1',
+        expect.objectContaining({
+          messageType: 'task',
+          metadata: { contactEventType: 'contact_request_received' },
+        }),
+      );
+    });
+
+    it('prefers THENVOI_OWNER_ID over the SDK owner UUID', async () => {
+      configMock.THENVOI_CONTACT_STRATEGY = 'hub_room';
+      configMock.THENVOI_OWNER_ID = 'owner-from-env';
+
+      const ch = createChannel()!;
+      await ch.connect();
+
+      await onContactEventCallback!({
+        type: 'contact_request_received',
+        payload: {
+          id: 'req-2',
+          from_handle: 'bob',
+          from_name: 'Bob',
+        },
+      });
+
+      expect(mockLink.rest.addChatParticipant).toHaveBeenCalledWith(
+        'hub-room-1',
+        {
+          participantId: 'owner-from-env',
+          role: 'member',
+        },
+      );
+      expect(mockLink.rest.getAgentMe).not.toHaveBeenCalled();
     });
   });
 });

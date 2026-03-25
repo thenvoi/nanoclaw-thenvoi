@@ -79,6 +79,43 @@ registerChannel('thenvoi', (opts) => {
   const contactDedupOrder: string[] = [];
   const MAX_CONTACT_DEDUP = 1000;
 
+  async function syncRoomsFromApi(): Promise<void> {
+    try {
+      if (typeof link.rest.listChats !== 'function') {
+        logger.warn(
+          'Thenvoi: REST adapter missing listChats endpoint, skipping room sync',
+        );
+        return;
+      }
+
+      const response = await link.rest.listChats({
+        page: 1,
+        pageSize: 100,
+      });
+      const rooms = response.data.map(normalizeRoomRecord);
+
+      activeRoomIds.clear();
+
+      for (const room of rooms) {
+        activeRoomIds.add(room.id);
+        await link.subscribeRoom(room.id);
+
+        const jid = `thenvoi:${room.id}`;
+        const title = room.title ?? undefined;
+        ensureGroupRegistered(jid, room.id, title, opts);
+        opts.onChatMetadata(
+          jid,
+          room.updatedAt || room.insertedAt || new Date().toISOString(),
+          title,
+          'thenvoi',
+          true,
+        );
+      }
+    } catch (err) {
+      logger.warn({ err }, 'Thenvoi: failed to sync rooms via agent API');
+    }
+  }
+
   const channel: Channel = {
     name: 'thenvoi',
 
@@ -93,9 +130,23 @@ registerChannel('thenvoi', (opts) => {
         capabilities: contactsEnabled ? { contacts: true } : undefined,
       });
 
+      if (typeof link.rest.getNextMessage !== 'function') {
+        (
+          link as ThenvoiLink & {
+            getNextMessage: (_roomId: string) => Promise<null>;
+          }
+        ).getNextMessage = async () => null;
+        logger.warn(
+          'Thenvoi: REST adapter missing next-message endpoint, falling back to websocket-only delivery',
+        );
+      }
+
       runtime = new AgentRuntime({
         link,
         agentId,
+        agentConfig: {
+          autoSubscribeExistingRooms: true,
+        },
 
         // Called for every message in every room
         async onExecute(context, event) {
@@ -207,6 +258,7 @@ registerChannel('thenvoi', (opts) => {
       });
 
       await runtime.start();
+      await syncRoomsFromApi();
 
       // Clean up stale Thenvoi groups that no longer exist on the platform
       const groups = opts.registeredGroups();
@@ -247,7 +299,7 @@ registerChannel('thenvoi', (opts) => {
     ownsJid: (jid: string) => jid.startsWith('thenvoi:'),
 
     async syncGroups() {
-      // AgentRuntime handles room discovery automatically
+      await syncRoomsFromApi();
     },
 
     async disconnect() {
@@ -310,6 +362,32 @@ registerChannel('thenvoi', (opts) => {
   const HUB_ROOM_FOLDER = 'thenvoi_contacts_hub';
   const HUB_ROOM_STATE_KEY = 'thenvoi_contact_hub_room_id';
 
+  async function resolveHubRoomOwnerId(
+    thenvoiLink: ThenvoiLink,
+  ): Promise<string | null> {
+    if (THENVOI_OWNER_ID) {
+      return THENVOI_OWNER_ID;
+    }
+
+    if (typeof thenvoiLink.rest.getAgentMe !== 'function') {
+      logger.warn(
+        'Thenvoi: REST adapter missing getAgentMe endpoint, owner will not be added to hub room',
+      );
+      return null;
+    }
+
+    try {
+      const identity = await thenvoiLink.rest.getAgentMe();
+      return asOptionalString(identity.ownerUuid) ?? null;
+    } catch (err) {
+      logger.warn(
+        { err },
+        'Thenvoi: failed to resolve owner UUID from SDK identity',
+      );
+      return null;
+    }
+  }
+
   /** Ensure hub room exists — create if needed, reuse across restarts. */
   async function ensureHubRoom(
     thenvoiLink: ThenvoiLink,
@@ -352,18 +430,7 @@ registerChannel('thenvoi', (opts) => {
       const result = await thenvoiLink.rest.createChat!();
       const newRoomId = result.id;
 
-      // Auto-derive owner ID if not configured
-      let ownerId = THENVOI_OWNER_ID;
-      if (!ownerId) {
-        try {
-          const profile = await thenvoiLink.rest.getAgentMe();
-          ownerId = profile.ownerUuid ?? '';
-        } catch {
-          logger.warn(
-            'Thenvoi: could not auto-derive owner ID from agent profile',
-          );
-        }
-      }
+      const ownerId = await resolveHubRoomOwnerId(thenvoiLink);
 
       // Add owner as participant so they can see the hub room
       if (ownerId) {
@@ -384,7 +451,7 @@ registerChannel('thenvoi', (opts) => {
         }
       } else {
         logger.warn(
-          'Thenvoi: THENVOI_OWNER_ID not set and auto-derive failed — owner will not see hub room',
+          'Thenvoi: no owner UUID available - owner will not see hub room',
         );
       }
 
@@ -588,3 +655,29 @@ about contact events, evaluate them and take action.
 
   return channel;
 });
+
+function normalizeRoomRecord(room: Record<string, unknown>): {
+  id: string;
+  title?: string;
+  insertedAt?: string;
+  updatedAt?: string;
+} {
+  return {
+    id: asRequiredString(room.id, 'Thenvoi room is missing an id'),
+    title: asOptionalString(room.title),
+    insertedAt: asOptionalString(room.inserted_at),
+    updatedAt: asOptionalString(room.updated_at),
+  };
+}
+
+function asOptionalString(value: unknown): string | undefined {
+  return typeof value === 'string' && value.length > 0 ? value : undefined;
+}
+
+function asRequiredString(value: unknown, errorMessage: string): string {
+  const normalized = asOptionalString(value);
+  if (!normalized) {
+    throw new Error(errorMessage);
+  }
+  return normalized;
+}
