@@ -18,6 +18,7 @@ import fs from 'fs';
 import path from 'path';
 import { query, HookCallback, PreCompactHookInput } from '@anthropic-ai/claude-agent-sdk';
 import { fileURLToPath } from 'url';
+import type { ThenvoiSdkMcpServer } from '@thenvoi/sdk/mcp/claude';
 
 interface ContainerInput {
   prompt: string;
@@ -373,6 +374,30 @@ async function runQuery(
     globalClaudeMd = fs.readFileSync(globalClaudeMdPath, 'utf-8');
   }
 
+  // Set up Thenvoi SDK MCP bridge (in-process, managed by SDK)
+  let thenvoiMcpBridge: ThenvoiSdkMcpServer | undefined;
+  if (process.env.NANOCLAW_CHANNEL === 'thenvoi' && process.env.THENVOI_REST_URL && process.env.THENVOI_ROOM_ID) {
+    const { createThenvoiSdkMcpServer } = await import('@thenvoi/sdk/mcp/claude');
+    const { ThenvoiClient } = await import('@thenvoi/rest-client');
+    const { FernRestAdapter } = await import('@thenvoi/sdk/rest');
+    const { AgentTools } = await import('@thenvoi/sdk/runtime');
+
+    const restUrl = process.env.THENVOI_REST_URL;
+    const baseUrl = restUrl.endsWith('/') ? restUrl : restUrl + '/';
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any -- bind() wrappers widen method signatures
+    const rest = new FernRestAdapter(new ThenvoiClient({ apiKey: 'placeholder', baseUrl }) as any);
+    const agentTools = new AgentTools({
+      roomId: process.env.THENVOI_ROOM_ID,
+      rest,
+      capabilities: { peers: true, contacts: true, memory: process.env.THENVOI_MEMORY_TOOLS === 'true' },
+    });
+    thenvoiMcpBridge = createThenvoiSdkMcpServer({
+      enableMemoryTools: process.env.THENVOI_MEMORY_TOOLS === 'true',
+      getToolsForRoom: () => agentTools,
+    });
+    log(`Thenvoi MCP bridge ready: ${thenvoiMcpBridge.allowedTools.length} tools`);
+  }
+
   // Thenvoi platform: append instructions that teach the agent to use platform tools
   if (process.env.NANOCLAW_CHANNEL === 'thenvoi') {
     let platformInstructions = `
@@ -500,7 +525,8 @@ Platform memories persist across sessions and are visible to other agents in the
         'TeamCreate', 'TeamDelete', 'SendMessage',
         'TodoWrite', 'ToolSearch', 'Skill',
         'NotebookEdit',
-        'mcp__nanoclaw__*'
+        'mcp__nanoclaw__*',
+        ...(thenvoiMcpBridge ? thenvoiMcpBridge.allowedTools : []),
       ],
       env: sdkEnv,
       permissionMode: 'bypassPermissions',
@@ -514,16 +540,9 @@ Platform memories persist across sessions and are visible to other agents in the
             NANOCLAW_CHAT_JID: containerInput.chatJid,
             NANOCLAW_GROUP_FOLDER: containerInput.groupFolder,
             NANOCLAW_IS_MAIN: containerInput.isMain ? '1' : '0',
-            // Thenvoi platform tools (passed through from container env)
-            ...(process.env.NANOCLAW_CHANNEL === 'thenvoi' ? {
-              NANOCLAW_CHANNEL: 'thenvoi',
-              THENVOI_REST_URL: process.env.THENVOI_REST_URL || '',
-              THENVOI_ROOM_ID: process.env.THENVOI_ROOM_ID || '',
-              THENVOI_AGENT_ID: process.env.THENVOI_AGENT_ID || '',
-              THENVOI_MEMORY_TOOLS: process.env.THENVOI_MEMORY_TOOLS || '',
-            } : {}),
           },
         },
+        ...(thenvoiMcpBridge ? { thenvoi: thenvoiMcpBridge.serverConfig } : {}),
       },
       hooks: {
         PreCompact: [{ hooks: [createPreCompactHook(containerInput.assistantName)] }],

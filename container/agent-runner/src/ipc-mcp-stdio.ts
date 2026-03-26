@@ -333,16 +333,6 @@ Use available_groups.json to find the JID for a group. The folder name must be c
   },
 );
 
-// Register Thenvoi platform tools when running for a Thenvoi group
-if (process.env.NANOCLAW_CHANNEL === 'thenvoi' && process.env.THENVOI_REST_URL && process.env.THENVOI_ROOM_ID) {
-  const { registerThenvoiTools } = await import('./thenvoi-tools.js');
-  registerThenvoiTools(server, {
-    restUrl: process.env.THENVOI_REST_URL,
-    roomId: process.env.THENVOI_ROOM_ID,
-    agentId: process.env.THENVOI_AGENT_ID || '',
-  });
-}
-
 // Start the stdio transport
 const transport = new StdioServerTransport();
 await server.connect(transport);
