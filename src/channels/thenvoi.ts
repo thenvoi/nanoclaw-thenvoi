@@ -297,13 +297,13 @@ registerChannel('thenvoi', (opts) => {
 
         logger: {
           debug: (msg: string, meta?: unknown) =>
-            logger.debug(meta, `Thenvoi: ${msg}`),
+            logger.debug(meta as Record<string, unknown>, `Thenvoi: ${msg}`),
           info: (msg: string, meta?: unknown) =>
-            logger.info(meta, `Thenvoi: ${msg}`),
+            logger.info(meta as Record<string, unknown>, `Thenvoi: ${msg}`),
           warn: (msg: string, meta?: unknown) =>
-            logger.warn(meta, `Thenvoi: ${msg}`),
+            logger.warn(meta as Record<string, unknown>, `Thenvoi: ${msg}`),
           error: (msg: string, meta?: unknown) =>
-            logger.error(meta, `Thenvoi: ${msg}`),
+            logger.error(meta as Record<string, unknown>, `Thenvoi: ${msg}`),
         },
       });
 
