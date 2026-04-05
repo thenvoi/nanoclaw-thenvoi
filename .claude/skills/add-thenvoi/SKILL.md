@@ -165,6 +165,39 @@ If the user chooses Yes, add to `.env`:
 THENVOI_INTERNAL_AS_THOUGHTS=true
 ```
 
+### Container capacity
+
+Explain to the user:
+
+> **How NanoClaw handles Thenvoi chat rooms:**
+>
+> Each chat room on the Thenvoi Platform spins up its own isolated NanoClaw container agent. This gives every room a separate Claude Code session with its own memory and filesystem — but it also means each active room uses RAM (~200–400 MB per container).
+>
+> Containers stay alive for **30 minutes** after the last message (the idle timeout), then shut down automatically. If you hit the concurrent container limit, new rooms will queue silently — the agent simply won't respond until a slot frees up.
+>
+> The default limit is **5 concurrent containers**. Adjust based on your machine's RAM:
+> - 8 GB RAM → 3–5 containers
+> - 16 GB RAM → 5–10 containers
+> - 32 GB+ RAM → 10–20 containers
+
+AskUserQuestion: How many Thenvoi chat rooms do you expect to be active at the same time? (Each active room uses ~300 MB of RAM and stays alive for 30 minutes after the last message.)
+
+1. **5 (default)** — good for casual use, up to 5 rooms at a time
+2. **10** — recommended for active use with multiple rooms
+3. **15–20** — for power users with 32 GB+ RAM
+
+Based on the user's choice, set `MAX_CONCURRENT_CONTAINERS` in `.env`:
+
+```bash
+# Add or update in .env
+# If user chose 5, skip (it's the default)
+# If user chose 10:
+echo "MAX_CONCURRENT_CONTAINERS=10" >> .env
+# If user chose 15-20, use the specific number they picked
+```
+
+Also let the user know they can adjust `IDLE_TIMEOUT` in `.env` (default `1800000` = 30 min) to free slots faster if needed.
+
 ### Build container and restart
 
 ```bash

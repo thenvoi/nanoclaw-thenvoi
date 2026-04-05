@@ -211,7 +211,7 @@ Tell user to test: send a message in their registered chat. Show: `tail -f logs/
 
 **Container agent fails ("Claude Code process exited with code 1"):** Ensure the container runtime is running — `open -a Docker` (macOS Docker), `container system start` (Apple Container), or `sudo systemctl start docker` (Linux). Check container logs in `groups/main/logs/container-*.log`.
 
-**No response to messages:** Check trigger pattern. Main channel doesn't need prefix. Check DB: `npx tsx setup/index.ts --step verify`. Check `logs/nanoclaw.log`.
+**No response to messages:** Check trigger pattern. Main channel doesn't need prefix. Check DB: `npx tsx setup/index.ts --step verify`. Check `logs/nanoclaw.log`. Also check if the concurrent container limit was reached — each active chat group uses one container, and the default limit is 5. Set `MAX_CONCURRENT_CONTAINERS` in `.env` to increase it (each container uses ~300 MB RAM, stays alive 30 min after last message).
 
 **Channel not connecting:** Verify the channel's credentials are set in `.env`. Channels auto-enable when their credentials are present. For WhatsApp: check `store/auth/creds.json` exists. For token-based channels: check token values in `.env`. Restart the service after any `.env` change.
 
