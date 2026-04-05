@@ -251,12 +251,15 @@ registerChannel('thenvoi', (opts) => {
             const res = await fetch(
               `http://${PROXY_BIND_HOST}:${CREDENTIAL_PROXY_PORT}/thenvoi/api/v1/agent/memories?subject_id=${participant.id}&scope=subject`,
             );
-            const body = await res.json() as { data?: Array<{ type?: string; content: string }> };
+            const body = (await res.json()) as {
+              data?: Array<{ type?: string; content: string }>;
+            };
             if (!body.data?.length) return;
 
-            const memories = body.data.slice(0, 10).map(
-              (m) => `- [${m.type || 'memory'}] ${m.content}`,
-            ).join('\n');
+            const memories = body.data
+              .slice(0, 10)
+              .map((m) => `- [${m.type || 'memory'}] ${m.content}`)
+              .join('\n');
             const content = `[System]: ${participant.name} joined the room. Here's what you know about them:\n${memories}`;
 
             opts.onMessage(jid, {
@@ -270,7 +273,11 @@ registerChannel('thenvoi', (opts) => {
               is_bot_message: false,
             });
             logger.info(
-              { roomId, participant: participant.name, memoryCount: body.data.length },
+              {
+                roomId,
+                participant: participant.name,
+                memoryCount: body.data.length,
+              },
               'Thenvoi: loaded memories for new participant',
             );
           } catch (err) {

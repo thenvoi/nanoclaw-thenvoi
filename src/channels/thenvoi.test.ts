@@ -8,7 +8,15 @@ let onExecuteCallback:
 let onSessionCleanupCallback: ((roomId: string) => Promise<void>) | null = null;
 let onContactEventCallback: ((event: unknown) => Promise<void>) | null = null;
 let onParticipantAddedCallback:
-  | ((roomId: string, participant: { id: string; name: string; type: string; handle?: string | null }) => Promise<void>)
+  | ((
+      roomId: string,
+      participant: {
+        id: string;
+        name: string;
+        type: string;
+        handle?: string | null;
+      },
+    ) => Promise<void>)
   | null = null;
 
 const configMock = vi.hoisted(() => ({
@@ -54,7 +62,15 @@ vi.mock('@thenvoi/sdk', () => ({
     onExecute: (ctx: unknown, ev: unknown) => Promise<void>;
     onSessionCleanup?: (roomId: string) => Promise<void>;
     onContactEvent?: (event: unknown) => Promise<void>;
-    onParticipantAdded?: (roomId: string, participant: { id: string; name: string; type: string; handle?: string | null }) => Promise<void>;
+    onParticipantAdded?: (
+      roomId: string,
+      participant: {
+        id: string;
+        name: string;
+        type: string;
+        handle?: string | null;
+      },
+    ) => Promise<void>;
   }) {
     onExecuteCallback = opts.onExecute;
     onSessionCleanupCallback = opts.onSessionCleanup ?? null;
@@ -490,13 +506,20 @@ describe('Thenvoi Channel', () => {
   });
 
   describe('participant memory loading (onParticipantAdded)', () => {
-    function mockFetchMemories(memories: Array<{ type?: string; content: string }>) {
+    function mockFetchMemories(
+      memories: Array<{ type?: string; content: string }>,
+    ) {
       return vi.fn().mockResolvedValue({
         json: () => Promise.resolve({ data: memories }),
       });
     }
 
-    const participant = { id: 'user-1', name: 'Alice', type: 'User', handle: '@alice' };
+    const participant = {
+      id: 'user-1',
+      name: 'Alice',
+      type: 'User',
+      handle: '@alice',
+    };
 
     async function setupAndConnect() {
       configMock.THENVOI_MEMORY_LOAD_ON_START = true;
@@ -508,7 +531,9 @@ describe('Thenvoi Channel', () => {
     }
 
     it('fetches memories and injects correctly-shaped synthetic message', async () => {
-      const fetchMock = mockFetchMemories([{ type: 'semantic', content: 'Likes dark mode' }]);
+      const fetchMock = mockFetchMemories([
+        { type: 'semantic', content: 'Likes dark mode' },
+      ]);
       vi.stubGlobal('fetch', fetchMock);
 
       await setupAndConnect();
@@ -575,9 +600,12 @@ describe('Thenvoi Channel', () => {
     });
 
     it('no-ops when API response has no data field', async () => {
-      vi.stubGlobal('fetch', vi.fn().mockResolvedValue({
-        json: () => Promise.resolve({}),
-      }));
+      vi.stubGlobal(
+        'fetch',
+        vi.fn().mockResolvedValue({
+          json: () => Promise.resolve({}),
+        }),
+      );
       await setupAndConnect();
       await onParticipantAddedCallback!('room-1', participant);
 
@@ -585,7 +613,10 @@ describe('Thenvoi Channel', () => {
     });
 
     it('handles fetch network errors gracefully', async () => {
-      vi.stubGlobal('fetch', vi.fn().mockRejectedValue(new Error('ECONNREFUSED')));
+      vi.stubGlobal(
+        'fetch',
+        vi.fn().mockRejectedValue(new Error('ECONNREFUSED')),
+      );
       await setupAndConnect();
 
       await expect(
@@ -595,9 +626,12 @@ describe('Thenvoi Channel', () => {
     });
 
     it('handles malformed JSON response gracefully', async () => {
-      vi.stubGlobal('fetch', vi.fn().mockResolvedValue({
-        json: () => Promise.reject(new Error('Unexpected token')),
-      }));
+      vi.stubGlobal(
+        'fetch',
+        vi.fn().mockResolvedValue({
+          json: () => Promise.reject(new Error('Unexpected token')),
+        }),
+      );
       await setupAndConnect();
 
       await expect(
@@ -607,7 +641,12 @@ describe('Thenvoi Channel', () => {
     });
 
     it('works for agent participants (not filtered out)', async () => {
-      vi.stubGlobal('fetch', mockFetchMemories([{ type: 'procedural', content: 'Handles weather queries' }]));
+      vi.stubGlobal(
+        'fetch',
+        mockFetchMemories([
+          { type: 'procedural', content: 'Handles weather queries' },
+        ]),
+      );
       await setupAndConnect();
 
       await onParticipantAddedCallback!('room-1', {
@@ -636,7 +675,9 @@ describe('Thenvoi Channel', () => {
 
       const call = onMessage.mock.calls[0];
       const content = call[1].content as string;
-      const bullets = content.split('\n').filter((l: string) => l.startsWith('- '));
+      const bullets = content
+        .split('\n')
+        .filter((l: string) => l.startsWith('- '));
       expect(bullets).toHaveLength(10);
       // Indices 0, 3, 6, 9 have no type → should show [memory] fallback
       expect(content).toContain('[memory]');
