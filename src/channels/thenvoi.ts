@@ -19,7 +19,10 @@ import {
   ASSISTANT_NAME,
   THENVOI_CONTACT_STRATEGY,
   THENVOI_OWNER_ID,
+  THENVOI_MEMORY_LOAD_ON_START,
+  CREDENTIAL_PROXY_PORT,
 } from '../config.js';
+import { PROXY_BIND_HOST } from '../container-runtime.js';
 
 const envKeys = ['THENVOI_AGENT_ID', 'THENVOI_API_KEY', 'THENVOI_BASE_URL'];
 
@@ -236,6 +239,53 @@ registerChannel('thenvoi', (opts) => {
 
         async onContactEvent(event: ContactEvent) {
           await handleContactEvent(event, link, opts, agentId);
+        },
+
+        async onParticipantAdded(roomId, participant) {
+          if (!THENVOI_MEMORY_LOAD_ON_START) return;
+
+          const jid = `thenvoi:${roomId}`;
+          if (!opts.registeredGroups()[jid]) return;
+
+          try {
+            const res = await fetch(
+              `http://${PROXY_BIND_HOST}:${CREDENTIAL_PROXY_PORT}/thenvoi/api/v1/agent/memories?subject_id=${participant.id}&scope=subject`,
+            );
+            const body = (await res.json()) as {
+              data?: Array<{ type?: string; content: string }>;
+            };
+            if (!body.data?.length) return;
+
+            const memories = body.data
+              .slice(0, 10)
+              .map((m) => `- [${m.type || 'memory'}] ${m.content}`)
+              .join('\n');
+            const content = `[System]: ${participant.name} joined the room. Here's what you know about them:\n${memories}`;
+
+            opts.onMessage(jid, {
+              id: `memory-load-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`,
+              chat_jid: jid,
+              sender: 'system',
+              sender_name: 'System',
+              content,
+              timestamp: new Date().toISOString(),
+              is_from_me: false,
+              is_bot_message: false,
+            });
+            logger.info(
+              {
+                roomId,
+                participant: participant.name,
+                memoryCount: body.data.length,
+              },
+              'Thenvoi: loaded memories for new participant',
+            );
+          } catch (err) {
+            logger.warn(
+              { err, roomId, participant: participant.name },
+              'Thenvoi: failed to load memories for new participant',
+            );
+          }
         },
 
         onError(error, event) {
