@@ -86,11 +86,27 @@ function ensureOneCLIAgent(jid: string, group: RegisteredGroup): void {
   if (group.isMain) return;
   const identifier = group.folder.toLowerCase().replace(/_/g, '-');
   onecli.ensureAgent({ name: group.name, identifier }).then(
-    (res) => {
+    async (res) => {
       logger.info(
         { jid, identifier, created: res.created },
         'OneCLI agent ensured',
       );
+      // Ensure agent has secretMode "all" so it gets Thenvoi and all other
+      // secrets. OneCLI defaults to "selective" which only includes Anthropic.
+      try {
+        const apiUrl = ONECLI_URL.replace(/\/+$/, '');
+        const agents = await fetch(`${apiUrl}/api/agents`).then((r) => r.json()) as { data?: Array<{ id: string; identifier: string; secretMode: string }> };
+        const agent = agents.data?.find((a) => a.identifier === identifier);
+        if (agent && agent.secretMode !== 'all') {
+          await fetch(`${apiUrl}/api/agents/${agent.id}/secret-mode`, {
+            method: 'PUT',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ mode: 'all' }),
+          });
+        }
+      } catch {
+        // Best-effort — agent works without this, just with fewer secrets
+      }
     },
     (err) => {
       logger.debug(
@@ -164,13 +180,23 @@ function registerGroup(jid: string, group: RegisteredGroup): void {
 
   // Copy CLAUDE.md template into the new group folder so agents have
   // identity and instructions from the first run.  (Fixes #1391)
+  // Thenvoi rooms get a platform-specific template; others get global/main.
   const groupMdFile = path.join(groupDir, 'CLAUDE.md');
   if (!fs.existsSync(groupMdFile)) {
-    const templateFile = path.join(
-      GROUPS_DIR,
-      group.isMain ? 'main' : 'global',
-      'CLAUDE.md',
-    );
+    let templateFile: string | null = null;
+    if (jid.startsWith('thenvoi:')) {
+      const thenvoiTemplate = path.join(GROUPS_DIR, 'thenvoi', 'CLAUDE.md');
+      if (fs.existsSync(thenvoiTemplate)) {
+        templateFile = thenvoiTemplate;
+      }
+    }
+    if (!templateFile) {
+      templateFile = path.join(
+        GROUPS_DIR,
+        group.isMain ? 'main' : 'global',
+        'CLAUDE.md',
+      );
+    }
     if (fs.existsSync(templateFile)) {
       let content = fs.readFileSync(templateFile, 'utf-8');
       if (ASSISTANT_NAME !== 'Andy') {

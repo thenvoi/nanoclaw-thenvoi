@@ -260,9 +260,14 @@ async function buildContainerArgs(
     );
   }
 
-  // Thenvoi platform: pass channel info and real REST URL
-  // OneCLI handles credential injection for HTTPS targets.
-  // For HTTP targets (local dev), pass the API key directly.
+  // Thenvoi platform: pass channel info and REST URL.
+  // HTTPS (production): OneCLI injects the API key via MITM proxy.
+  //   The Thenvoi generic secret must be registered with OneCLI and agents
+  //   must have secretMode "all" (set by ensureOneCLIAgent on creation).
+  // HTTP (local dev): API key passed directly since OneCLI only intercepts HTTPS.
+  // To test OneCLI locally: run Caddy as HTTPS reverse proxy in front of Phoenix
+  //   and add the mkcert root CA to the OneCLI Docker container trust store
+  //   (/etc/ssl/certs/ca-certificates.crt).
   if (input.chatJid.startsWith('thenvoi:')) {
     const thenvoiEnv = readEnvFile([
       'THENVOI_AGENT_ID',
@@ -294,7 +299,7 @@ async function buildContainerArgs(
       '-e',
       `THENVOI_MEMORY_CONSOLIDATION=${thenvoiEnv.THENVOI_MEMORY_CONSOLIDATION || 'false'}`,
     );
-    // For HTTP targets (local dev), OneCLI can't intercept — pass API key directly
+    // For HTTP targets, OneCLI can't intercept — pass API key directly
     const isHttps = thenvoiBaseUrl.startsWith('https');
     if (!isHttps && thenvoiEnv.THENVOI_API_KEY) {
       args.push('-e', `THENVOI_API_KEY=${thenvoiEnv.THENVOI_API_KEY}`);

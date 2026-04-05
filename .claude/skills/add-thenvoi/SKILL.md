@@ -103,11 +103,11 @@ If the platform base URL uses HTTPS (production), register the API key with OneC
 
 AskUserQuestion: How would you like to register the Thenvoi API key with OneCLI?
 
-1. **Open dashboard (recommended)** — Open the OneCLI dashboard in your browser. This is the most secure option — the key never appears in terminal history. Open `http://127.0.0.1:10254`, go to Secrets → Create Secret. Name: `Thenvoi`, Type: `api_key`, Value: (paste API key), Host Pattern: (their platform hostname, e.g., `app.thenvoi.com`).
+1. **Open dashboard (recommended)** — Open the OneCLI dashboard in your browser. This is the most secure option — the key never appears in terminal history. Open `http://127.0.0.1:10254`, go to Secrets → Create Secret. Name: `Thenvoi`, Type: `Generic`, Header Name: `x-api-key`, Value: (paste API key), Host Pattern: (their platform hostname, e.g., `app.thenvoi.com`).
 
 2. **CLI command** — Register via terminal. Note: the key will appear in your shell history.
    ```bash
-   onecli secrets create --name Thenvoi --type api_key --value <api-key> --host-pattern <hostname>
+   onecli secrets create --name Thenvoi --type generic --value <api-key> --host-pattern <hostname> --header-name x-api-key
    ```
 
 3. **Skip** — For local dev (HTTP), OneCLI is not needed. The API key is passed directly to containers.
