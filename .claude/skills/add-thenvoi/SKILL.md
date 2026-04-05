@@ -53,7 +53,7 @@ This merges in:
 - `@thenvoi/sdk` and `@thenvoi/rest-client` dependencies in `package.json`
 - `THENVOI_BASE_URL`, `THENVOI_AGENT_ID`, `THENVOI_API_KEY` in `.env.example`
 - Extended credential proxy with `/thenvoi/*` route
-- Container-side platform tools (`container/agent-runner/src/thenvoi-tools.ts`) using SDK's `AgentTools`
+- SDK MCP bridge for platform tools (in-process, using `@thenvoi/sdk/mcp/claude`)
 - Platform system prompt injection for Thenvoi containers
 
 If the merge reports conflicts, resolve them by reading the conflicted files and understanding the intent of both sides.
@@ -323,11 +323,10 @@ launchctl load ~/Library/LaunchAgents/com.nanoclaw.plist
 To remove Thenvoi integration:
 
 1. Delete `src/channels/thenvoi.ts` and `src/channels/thenvoi.test.ts`
-2. Delete `container/agent-runner/src/thenvoi-tools.ts`
-3. Remove `import './thenvoi.js'` from `src/channels/index.ts`
-4. Remove `THENVOI_*` variables from `.env`
-5. Remove Thenvoi registrations from SQLite: `sqlite3 store/messages.db "DELETE FROM registered_groups WHERE jid LIKE 'thenvoi:%'"`
-6. Revert credential proxy changes in `src/credential-proxy.ts`
-7. Revert container runner changes in `src/container-runner.ts`
-8. Uninstall: `npm uninstall @thenvoi/sdk @thenvoi/rest-client`
-9. Rebuild: `npm run build && NO_CACHE=1 ./container/build.sh && launchctl kickstart -k gui/$(id -u)/com.nanoclaw` (macOS)
+2. Remove `import './thenvoi.js'` from `src/channels/index.ts`
+3. Remove `THENVOI_*` variables from `.env`
+4. Remove Thenvoi registrations from SQLite: `sqlite3 store/messages.db "DELETE FROM registered_groups WHERE jid LIKE 'thenvoi:%'"`
+5. Revert credential proxy changes in `src/credential-proxy.ts`
+6. Revert container runner changes in `src/container-runner.ts`
+7. Uninstall: `npm uninstall @thenvoi/sdk @thenvoi/rest-client`
+8. Rebuild: `npm run build && NO_CACHE=1 ./container/build.sh && launchctl kickstart -k gui/$(id -u)/com.nanoclaw` (macOS)

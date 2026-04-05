@@ -337,6 +337,7 @@ async function runQuery(
   containerInput: ContainerInput,
   sdkEnv: Record<string, string | undefined>,
   resumeAt?: string,
+  opts?: { preloadedMemories?: string; isConsolidation?: boolean },
 ): Promise<{ newSessionId?: string; lastAssistantUuid?: string; closedDuringQuery: boolean }> {
   const stream = new MessageStream();
   stream.push(prompt);
@@ -360,7 +361,9 @@ async function runQuery(
     }
     setTimeout(pollIpcDuringQuery, IPC_POLL_MS);
   };
-  setTimeout(pollIpcDuringQuery, IPC_POLL_MS);
+  if (!opts?.isConsolidation) {
+    setTimeout(pollIpcDuringQuery, IPC_POLL_MS);
+  }
 
   let newSessionId: string | undefined;
   let lastAssistantUuid: string | undefined;
@@ -486,6 +489,18 @@ Platform memories persist across sessions and are visible to other agents in the
 `;
     }
 
+    // Inject preloaded memories (fetched once in main() before the query loop)
+    if (opts?.preloadedMemories) {
+      platformInstructions += `
+
+## Existing Memories About This User
+
+${opts.preloadedMemories}
+
+Use these for context. Do NOT re-store information that already exists.
+`;
+    }
+
     globalClaudeMd = globalClaudeMd
       ? globalClaudeMd + '\n' + platformInstructions
       : platformInstructions;
@@ -571,11 +586,13 @@ Platform memories persist across sessions and are visible to other agents in the
       resultCount++;
       const textResult = 'result' in message ? (message as { result?: string }).result : null;
       log(`Result #${resultCount}: subtype=${message.subtype}${textResult ? ` text=${textResult.slice(0, 200)}` : ''}`);
-      writeOutput({
-        status: 'success',
-        result: textResult || null,
-        newSessionId
-      });
+      if (!opts?.isConsolidation) {
+        writeOutput({
+          status: 'success',
+          result: textResult || null,
+          newSessionId
+        });
+      }
     }
   }
 
@@ -625,13 +642,58 @@ async function main(): Promise<void> {
     prompt += '\n' + pending.join('\n');
   }
 
+  // Load existing memories before the first query (Thenvoi only, opt-in)
+  let preloadedMemories = '';
+  if (process.env.THENVOI_MEMORY_LOAD_ON_START === 'true' && process.env.NANOCLAW_CHANNEL === 'thenvoi') {
+    try {
+      const { ThenvoiClient } = await import('@thenvoi/rest-client');
+      const { FernRestAdapter } = await import('@thenvoi/sdk/rest');
+      const { AgentTools } = await import('@thenvoi/sdk/runtime');
+
+      const restUrl = process.env.THENVOI_REST_URL || '';
+      const baseUrl = restUrl.endsWith('/') ? restUrl : restUrl + '/';
+      const client = new ThenvoiClient({ apiKey: 'placeholder', baseUrl });
+      const rest = new FernRestAdapter(client as any); // eslint-disable-line @typescript-eslint/no-explicit-any
+      const tools = new AgentTools({
+        roomId: process.env.THENVOI_ROOM_ID || '',
+        rest,
+        capabilities: { memory: true },
+      });
+      // Fetch participants to get IDs for memory loading
+      const participants = await tools.getParticipants();
+      log(`Room has ${participants.length} participants`);
+
+      const allMemories: string[] = [];
+      for (const participant of participants) {
+        const result = await tools.executeToolCall('thenvoi_list_memories', {
+          subject_id: participant.id, scope: 'subject',
+        }) as { data?: Array<{ content: string; type?: string; metadata?: { tags?: string[] } }> };
+
+        if (result?.data && result.data.length > 0) {
+          const items = result.data.slice(0, 10);
+          const userMemories = items.map((m) =>
+            `- [${m.type || 'memory'}] ${m.content}`
+          ).join('\n');
+          allMemories.push(`### ${participant.name}\n${userMemories}`);
+        }
+      }
+
+      if (allMemories.length > 0) {
+        preloadedMemories = allMemories.join('\n\n');
+        log(`Loaded memories for ${allMemories.length} user(s)`);
+      }
+    } catch (err) {
+      log(`Failed to load memories (continuing without): ${err instanceof Error ? err.message : String(err)}`);
+    }
+  }
+
   // Query loop: run query → wait for IPC message → run new query → repeat
   let resumeAt: string | undefined;
   try {
     while (true) {
       log(`Starting query (session: ${sessionId || 'new'}, resumeAt: ${resumeAt || 'latest'})...`);
 
-      const queryResult = await runQuery(prompt, sessionId, mcpServerPath, containerInput, sdkEnv, resumeAt);
+      const queryResult = await runQuery(prompt, sessionId, mcpServerPath, containerInput, sdkEnv, resumeAt, { preloadedMemories });
       if (queryResult.newSessionId) {
         sessionId = queryResult.newSessionId;
       }
@@ -661,6 +723,55 @@ async function main(): Promise<void> {
 
       log(`Got new message (${nextMessage.length} chars), starting new query`);
       prompt = nextMessage;
+    }
+    // Memory consolidation on exit (Thenvoi only, opt-in)
+    if (process.env.THENVOI_MEMORY_CONSOLIDATION === 'true'
+        && process.env.NANOCLAW_CHANNEL === 'thenvoi'
+        && sessionId) {
+      const consolidationPrompt = `You are now in memory consolidation mode. The conversation has ended.
+Your job is to review what happened and manage long-term memories.
+
+Today's date: ${new Date().toISOString().split('T')[0]}
+
+## CRITICAL RULES
+- Do NOT send any chat messages (no thenvoi_send_message calls)
+- Only use memory tools and thought events (thenvoi_send_event)
+
+## Memory Systems
+- **long_term/semantic**: General facts and preferences ("Prefers dark mode")
+- **long_term/episodic**: Specific dated events ("Discussed project deadline on 2026-03-22")
+- **long_term/procedural**: Behavioral patterns ("Usually asks follow-up questions about costs")
+
+## Your Tasks
+1. **ALWAYS call thenvoi_list_memories() first** to see what's already stored
+2. Compare the conversation that just ended against existing memories
+3. **Think out loud**: Before each memory operation, call thenvoi_send_event(content="your reasoning", message_type="thought")
+4. Consolidate memories:
+   - Create new memories only for genuinely NEW information (thenvoi_store_memory)
+   - Supersede outdated memories when information has CHANGED (thenvoi_supersede_memory)
+   - Supersede duplicate memories — if you see multiple memories with the same info, keep only one
+   - If information already exists (even with different wording) → do NOT create a duplicate
+5. Use episodic for specific events (include dates), semantic for general facts/preferences
+6. **If no new information**: Report "No new information to store" via thought event and finish
+
+## Rules
+- Only store genuinely useful information
+- Include dates in episodic memories
+- Keep memories concise (under 100 characters when possible)
+- Your thought field should explain WHY this memory is useful
+- Always add 2-5 lowercase hyphenated tags (e.g., "preferences", "scheduling", "decisions")
+- Use segment="user" for info about the user, segment="agent" for self-knowledge
+- Do NOT store raw conversation content (the platform already tracks messages)
+
+Report what you stored/superseded via thenvoi_send_event(content, message_type="thought"), then finish.`;
+
+      log('Running memory consolidation...');
+      try {
+        await runQuery(consolidationPrompt, sessionId, mcpServerPath, containerInput, sdkEnv, resumeAt, { isConsolidation: true });
+        log('Memory consolidation complete');
+      } catch (err) {
+        log(`Memory consolidation failed (non-fatal): ${err instanceof Error ? err.message : String(err)}`);
+      }
     }
   } catch (err) {
     const errorMessage = err instanceof Error ? err.message : String(err);

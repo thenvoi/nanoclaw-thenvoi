@@ -7,11 +7,16 @@ let onExecuteCallback:
   | null = null;
 let onSessionCleanupCallback: ((roomId: string) => Promise<void>) | null = null;
 let onContactEventCallback: ((event: unknown) => Promise<void>) | null = null;
+let onParticipantAddedCallback:
+  | ((roomId: string, participant: { id: string; name: string; type: string; handle?: string | null }) => Promise<void>)
+  | null = null;
 
 const configMock = vi.hoisted(() => ({
   ASSISTANT_NAME: 'Andy',
   THENVOI_CONTACT_STRATEGY: 'disabled',
   THENVOI_OWNER_ID: '',
+  THENVOI_MEMORY_LOAD_ON_START: false as boolean,
+  CREDENTIAL_PROXY_PORT: 3001,
 }));
 
 const mockRuntime = {
@@ -49,10 +54,12 @@ vi.mock('@thenvoi/sdk', () => ({
     onExecute: (ctx: unknown, ev: unknown) => Promise<void>;
     onSessionCleanup?: (roomId: string) => Promise<void>;
     onContactEvent?: (event: unknown) => Promise<void>;
+    onParticipantAdded?: (roomId: string, participant: { id: string; name: string; type: string; handle?: string | null }) => Promise<void>;
   }) {
     onExecuteCallback = opts.onExecute;
     onSessionCleanupCallback = opts.onSessionCleanup ?? null;
     onContactEventCallback = opts.onContactEvent ?? null;
+    onParticipantAddedCallback = opts.onParticipantAdded ?? null;
     return mockRuntime;
   }),
 }));
@@ -70,6 +77,10 @@ vi.mock('../db.js', () => ({
   storeMessage: vi.fn(),
   getRouterState: vi.fn().mockReturnValue(null),
   setRouterState: vi.fn(),
+}));
+
+vi.mock('../container-runtime.js', () => ({
+  PROXY_BIND_HOST: '127.0.0.1',
 }));
 
 vi.mock('../group-folder.js', () => ({
@@ -102,8 +113,10 @@ describe('Thenvoi Channel', () => {
     onExecuteCallback = null;
     onSessionCleanupCallback = null;
     onContactEventCallback = null;
+    onParticipantAddedCallback = null;
     configMock.THENVOI_CONTACT_STRATEGY = 'disabled';
     configMock.THENVOI_OWNER_ID = '';
+    configMock.THENVOI_MEMORY_LOAD_ON_START = false;
     process.env.THENVOI_AGENT_ID = 'agent-123';
     process.env.THENVOI_API_KEY = 'key-abc';
     process.env.THENVOI_BASE_URL = 'https://test.thenvoi.com';
@@ -473,6 +486,161 @@ describe('Thenvoi Channel', () => {
         },
       );
       expect(mockLink.rest.getAgentMe).not.toHaveBeenCalled();
+    });
+  });
+
+  describe('participant memory loading (onParticipantAdded)', () => {
+    function mockFetchMemories(memories: Array<{ type?: string; content: string }>) {
+      return vi.fn().mockResolvedValue({
+        json: () => Promise.resolve({ data: memories }),
+      });
+    }
+
+    const participant = { id: 'user-1', name: 'Alice', type: 'User', handle: '@alice' };
+
+    async function setupAndConnect() {
+      configMock.THENVOI_MEMORY_LOAD_ON_START = true;
+      registeredGroups.mockReturnValue({
+        'thenvoi:room-1': { name: 'Test Room', folder: 'thenvoi_room1' },
+      });
+      const ch = createChannel()!;
+      await ch.connect();
+    }
+
+    it('fetches memories and injects correctly-shaped synthetic message', async () => {
+      const fetchMock = mockFetchMemories([{ type: 'semantic', content: 'Likes dark mode' }]);
+      vi.stubGlobal('fetch', fetchMock);
+
+      await setupAndConnect();
+      await onParticipantAddedCallback!('room-1', participant);
+
+      expect(fetchMock).toHaveBeenCalledWith(
+        expect.stringContaining('127.0.0.1:3001'),
+      );
+      expect(fetchMock).toHaveBeenCalledWith(
+        expect.stringContaining('subject_id=user-1&scope=subject'),
+      );
+      expect(onMessage).toHaveBeenCalledWith(
+        'thenvoi:room-1',
+        expect.objectContaining({
+          chat_jid: 'thenvoi:room-1',
+          sender: 'system',
+          sender_name: 'System',
+          is_from_me: false,
+          is_bot_message: false,
+          content: expect.stringContaining('[System]: Alice joined the room'),
+        }),
+      );
+      expect(onMessage).toHaveBeenCalledWith(
+        'thenvoi:room-1',
+        expect.objectContaining({
+          content: expect.stringContaining('[semantic] Likes dark mode'),
+        }),
+      );
+    });
+
+    it('no-ops when THENVOI_MEMORY_LOAD_ON_START is false', async () => {
+      const fetchMock = vi.fn();
+      vi.stubGlobal('fetch', fetchMock);
+
+      // configMock.THENVOI_MEMORY_LOAD_ON_START is false by default
+      const ch = createChannel()!;
+      await ch.connect();
+      await onParticipantAddedCallback!('room-1', participant);
+
+      expect(fetchMock).not.toHaveBeenCalled();
+      expect(onMessage).not.toHaveBeenCalled();
+    });
+
+    it('no-ops when group is not registered', async () => {
+      const fetchMock = vi.fn();
+      vi.stubGlobal('fetch', fetchMock);
+
+      configMock.THENVOI_MEMORY_LOAD_ON_START = true;
+      registeredGroups.mockReturnValue({}); // room not registered
+      const ch = createChannel()!;
+      await ch.connect();
+      await onParticipantAddedCallback!('room-1', participant);
+
+      expect(fetchMock).not.toHaveBeenCalled();
+      expect(onMessage).not.toHaveBeenCalled();
+    });
+
+    it('no-ops when API returns empty memories array', async () => {
+      vi.stubGlobal('fetch', mockFetchMemories([]));
+      await setupAndConnect();
+      await onParticipantAddedCallback!('room-1', participant);
+
+      expect(onMessage).not.toHaveBeenCalled();
+    });
+
+    it('no-ops when API response has no data field', async () => {
+      vi.stubGlobal('fetch', vi.fn().mockResolvedValue({
+        json: () => Promise.resolve({}),
+      }));
+      await setupAndConnect();
+      await onParticipantAddedCallback!('room-1', participant);
+
+      expect(onMessage).not.toHaveBeenCalled();
+    });
+
+    it('handles fetch network errors gracefully', async () => {
+      vi.stubGlobal('fetch', vi.fn().mockRejectedValue(new Error('ECONNREFUSED')));
+      await setupAndConnect();
+
+      await expect(
+        onParticipantAddedCallback!('room-1', participant),
+      ).resolves.not.toThrow();
+      expect(onMessage).not.toHaveBeenCalled();
+    });
+
+    it('handles malformed JSON response gracefully', async () => {
+      vi.stubGlobal('fetch', vi.fn().mockResolvedValue({
+        json: () => Promise.reject(new Error('Unexpected token')),
+      }));
+      await setupAndConnect();
+
+      await expect(
+        onParticipantAddedCallback!('room-1', participant),
+      ).resolves.not.toThrow();
+      expect(onMessage).not.toHaveBeenCalled();
+    });
+
+    it('works for agent participants (not filtered out)', async () => {
+      vi.stubGlobal('fetch', mockFetchMemories([{ type: 'procedural', content: 'Handles weather queries' }]));
+      await setupAndConnect();
+
+      await onParticipantAddedCallback!('room-1', {
+        id: 'agent-other',
+        name: 'Weather Agent',
+        type: 'Agent',
+        handle: '@john/weather',
+      });
+
+      expect(onMessage).toHaveBeenCalledWith(
+        'thenvoi:room-1',
+        expect.objectContaining({
+          content: expect.stringContaining('Weather Agent joined the room'),
+        }),
+      );
+    });
+
+    it('limits to 10 memories and uses type fallback for missing type', async () => {
+      const memories = Array.from({ length: 15 }, (_, i) => ({
+        type: i % 3 === 0 ? undefined : 'semantic',
+        content: `Memory ${i + 1}`,
+      }));
+      vi.stubGlobal('fetch', mockFetchMemories(memories));
+      await setupAndConnect();
+      await onParticipantAddedCallback!('room-1', participant);
+
+      const call = onMessage.mock.calls[0];
+      const content = call[1].content as string;
+      const bullets = content.split('\n').filter((l: string) => l.startsWith('- '));
+      expect(bullets).toHaveLength(10);
+      // Indices 0, 3, 6, 9 have no type → should show [memory] fallback
+      expect(content).toContain('[memory]');
+      expect(content).toContain('[semantic]');
     });
   });
 });
