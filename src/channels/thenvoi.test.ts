@@ -24,7 +24,6 @@ const configMock = vi.hoisted(() => ({
   THENVOI_CONTACT_STRATEGY: 'disabled',
   THENVOI_OWNER_ID: '',
   THENVOI_MEMORY_LOAD_ON_START: false as boolean,
-  CREDENTIAL_PROXY_PORT: 3001,
 }));
 
 const mockRuntime = {
@@ -93,10 +92,6 @@ vi.mock('../db.js', () => ({
   storeMessage: vi.fn(),
   getRouterState: vi.fn().mockReturnValue(null),
   setRouterState: vi.fn(),
-}));
-
-vi.mock('../container-runtime.js', () => ({
-  PROXY_BIND_HOST: '127.0.0.1',
 }));
 
 vi.mock('../group-folder.js', () => ({
@@ -540,10 +535,14 @@ describe('Thenvoi Channel', () => {
       await onParticipantAddedCallback!('room-1', participant);
 
       expect(fetchMock).toHaveBeenCalledWith(
-        expect.stringContaining('127.0.0.1:3001'),
+        expect.stringContaining('test.thenvoi.com/api/v1/agent/memories'),
+        expect.objectContaining({
+          headers: { 'x-api-key': 'key-abc' },
+        }),
       );
       expect(fetchMock).toHaveBeenCalledWith(
         expect.stringContaining('subject_id=user-1&scope=subject'),
+        expect.anything(),
       );
       expect(onMessage).toHaveBeenCalledWith(
         'thenvoi:room-1',

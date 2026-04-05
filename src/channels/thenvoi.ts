@@ -20,9 +20,7 @@ import {
   THENVOI_CONTACT_STRATEGY,
   THENVOI_OWNER_ID,
   THENVOI_MEMORY_LOAD_ON_START,
-  CREDENTIAL_PROXY_PORT,
 } from '../config.js';
-import { PROXY_BIND_HOST } from '../container-runtime.js';
 
 const envKeys = ['THENVOI_AGENT_ID', 'THENVOI_API_KEY', 'THENVOI_BASE_URL'];
 
@@ -249,7 +247,8 @@ registerChannel('thenvoi', (opts) => {
 
           try {
             const res = await fetch(
-              `http://${PROXY_BIND_HOST}:${CREDENTIAL_PROXY_PORT}/thenvoi/api/v1/agent/memories?subject_id=${participant.id}&scope=subject`,
+              `${baseUrl}/api/v1/agent/memories?subject_id=${participant.id}&scope=subject`,
+              { headers: { 'x-api-key': apiKey } },
             );
             const body = (await res.json()) as {
               data?: Array<{ type?: string; content: string }>;
@@ -297,13 +296,13 @@ registerChannel('thenvoi', (opts) => {
 
         logger: {
           debug: (msg: string, meta?: unknown) =>
-            logger.debug(meta, `Thenvoi: ${msg}`),
+            logger.debug(meta as Record<string, unknown>, `Thenvoi: ${msg}`),
           info: (msg: string, meta?: unknown) =>
-            logger.info(meta, `Thenvoi: ${msg}`),
+            logger.info(meta as Record<string, unknown>, `Thenvoi: ${msg}`),
           warn: (msg: string, meta?: unknown) =>
-            logger.warn(meta, `Thenvoi: ${msg}`),
+            logger.warn(meta as Record<string, unknown>, `Thenvoi: ${msg}`),
           error: (msg: string, meta?: unknown) =>
-            logger.error(meta, `Thenvoi: ${msg}`),
+            logger.error(meta as Record<string, unknown>, `Thenvoi: ${msg}`),
         },
       });
 
