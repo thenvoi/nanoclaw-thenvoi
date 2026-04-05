@@ -6,6 +6,7 @@ import {
   CREDENTIAL_PROXY_PORT,
   IDLE_TIMEOUT,
   POLL_INTERVAL,
+  THENVOI_INTERNAL_AS_THOUGHTS,
   TIMEZONE,
   TRIGGER_PATTERN,
 } from './config.js';
@@ -35,6 +36,7 @@ import {
   getNewMessages,
   getRegisteredGroup,
   getRouterState,
+  deleteRegisteredGroup,
   initDatabase,
   setRegisteredGroup,
   setRouterState,
@@ -116,6 +118,20 @@ function registerGroup(jid: string, group: RegisteredGroup): void {
   logger.info(
     { jid, name: group.name, folder: group.folder },
     'Group registered',
+  );
+}
+
+function deregisterGroup(jid: string): void {
+  const group = registeredGroups[jid];
+  if (!group) return;
+
+  delete registeredGroups[jid];
+  deleteRegisteredGroup(jid);
+
+  // Group folder and files are kept for history
+  logger.info(
+    { jid, name: group.name, folder: group.folder },
+    'Group deregistered',
   );
 }
 
@@ -219,10 +235,32 @@ async function processGroupMessages(chatJid: string): Promise<boolean> {
         typeof result.result === 'string'
           ? result.result
           : JSON.stringify(result.result);
+      // For Thenvoi groups: optionally publish <internal> content as thought events
+      if (
+        chatJid.startsWith('thenvoi:') &&
+        THENVOI_INTERNAL_AS_THOUGHTS &&
+        channel.sendEvent
+      ) {
+        for (const match of raw.matchAll(/<internal>([\s\S]*?)<\/internal>/g)) {
+          const thought = match[1].trim();
+          if (thought) {
+            channel
+              .sendEvent(chatJid, thought, 'thought')
+              .catch((err) =>
+                logger.warn(
+                  { err, chatJid },
+                  'Failed to publish internal thought',
+                ),
+              );
+          }
+        }
+      }
+
       // Strip <internal>...</internal> blocks — agent uses these for internal reasoning
       const text = raw.replace(/<internal>[\s\S]*?<\/internal>/g, '').trim();
       logger.info({ group: group.name }, `Agent output: ${raw.slice(0, 200)}`);
-      if (text) {
+      // Thenvoi groups: agent sends messages via platform tools, not stdout
+      if (text && !chatJid.startsWith('thenvoi:')) {
         await channel.sendMessage(chatJid, text);
         outputSentToUser = true;
       }
@@ -574,6 +612,8 @@ async function main(): Promise<void> {
       isGroup?: boolean,
     ) => storeChatMetadata(chatJid, timestamp, name, channel, isGroup),
     registeredGroups: () => registeredGroups,
+    registerGroup,
+    deregisterGroup,
   };
 
   // Create and connect all registered channels.

@@ -19,6 +19,9 @@
     "test:watch": "vitest"
   },
   "dependencies": {
+    "@anthropic-ai/claude-agent-sdk": "0.2.63",
+    "@thenvoi/rest-client": "0.0.113",
+    "@thenvoi/sdk": "0.1.4",
     "better-sqlite3": "^11.8.1",
     "cron-parser": "^5.5.0",
     "pino": "^9.6.0",

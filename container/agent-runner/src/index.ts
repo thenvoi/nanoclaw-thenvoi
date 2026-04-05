@@ -18,6 +18,7 @@ import fs from 'fs';
 import path from 'path';
 import { query, HookCallback, PreCompactHookInput } from '@anthropic-ai/claude-agent-sdk';
 import { fileURLToPath } from 'url';
+import type { ThenvoiSdkMcpServer } from '@thenvoi/sdk/mcp/claude';
 
 interface ContainerInput {
   prompt: string;
@@ -373,6 +374,123 @@ async function runQuery(
     globalClaudeMd = fs.readFileSync(globalClaudeMdPath, 'utf-8');
   }
 
+  // Set up Thenvoi SDK MCP bridge (in-process, managed by SDK)
+  let thenvoiMcpBridge: ThenvoiSdkMcpServer | undefined;
+  if (process.env.NANOCLAW_CHANNEL === 'thenvoi' && process.env.THENVOI_REST_URL && process.env.THENVOI_ROOM_ID) {
+    const { createThenvoiSdkMcpServer } = await import('@thenvoi/sdk/mcp/claude');
+    const { ThenvoiClient } = await import('@thenvoi/rest-client');
+    const { FernRestAdapter } = await import('@thenvoi/sdk/rest');
+    const { AgentTools } = await import('@thenvoi/sdk/runtime');
+
+    const restUrl = process.env.THENVOI_REST_URL;
+    const baseUrl = restUrl.endsWith('/') ? restUrl : restUrl + '/';
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any -- bind() wrappers widen method signatures
+    const rest = new FernRestAdapter(new ThenvoiClient({ apiKey: 'placeholder', baseUrl }) as any);
+    const agentTools = new AgentTools({
+      roomId: process.env.THENVOI_ROOM_ID,
+      rest,
+      capabilities: { peers: true, contacts: true, memory: process.env.THENVOI_MEMORY_TOOLS === 'true' },
+    });
+    thenvoiMcpBridge = createThenvoiSdkMcpServer({
+      enableMemoryTools: process.env.THENVOI_MEMORY_TOOLS === 'true',
+      getToolsForRoom: () => agentTools,
+    });
+    log(`Thenvoi MCP bridge ready: ${thenvoiMcpBridge.allowedTools.length} tools`);
+  }
+
+  // Thenvoi platform: append instructions that teach the agent to use platform tools
+  if (process.env.NANOCLAW_CHANNEL === 'thenvoi') {
+    let platformInstructions = `
+## Thenvoi Platform Environment
+
+You are connected to the Thenvoi AI Platform. This is a multi-participant chat room.
+Messages show sender as [Name]: content. Messages prefixed with [System]: are platform updates.
+
+**CRITICAL: Use tools to communicate.** Plain text output is NOT delivered to users.
+You MUST use \`thenvoi_send_message(content, mentions)\` to respond.
+
+## Mention Format
+
+Mentions use **full handles** — all lowercase, no spaces:
+- Users: \`@username\` (e.g., \`@john-doe\`)
+- Agents: \`@username/agent-slug\` (e.g., \`@john-doe/weather-agent\`)
+
+**NEVER use UUIDs in mentions.** Always use the handle string.
+Call \`thenvoi_get_participants()\` to see who is in the room and their exact handles.
+
+## CRITICAL: Always Share Your Thinking
+
+You MUST call \`thenvoi_send_event(content, message_type="thought")\` BEFORE every action.
+This lets users see your reasoning process.
+
+## CRITICAL: Delegate When You Cannot Help Directly
+
+When asked about something you can't answer directly:
+1. Call \`thenvoi_lookup_peers()\` to find available specialized agents
+2. If a relevant agent exists, call \`thenvoi_add_participant(name="Agent Name")\` to add them
+3. Ask that agent using \`thenvoi_send_message(content, mentions=["@owner-handle/agent-slug"])\`
+4. Wait for their response and relay it back to the user
+
+NEVER say "I can't do that" without first checking if another agent can help.
+
+## CRITICAL: Do NOT Remove Agents Automatically
+
+After adding an agent to help with a task, do NOT remove them. They stay silent unless mentioned.
+
+## Examples
+
+### Simple question — answer directly
+[John Doe]: What's 2+2?
+-> thenvoi_send_event(content="Simple arithmetic, answering directly.", message_type="thought")
+-> thenvoi_send_message(content="4", mentions=["@john-doe"])
+
+### Delegation to another agent
+[John Doe]: What's the weather in Tokyo?
+-> thenvoi_send_event(content="I can't check weather. Looking for a weather agent.", message_type="thought")
+-> thenvoi_lookup_peers()
+-> thenvoi_send_event(content="Found Weather Agent. Adding to room.", message_type="thought")
+-> thenvoi_add_participant(name="Weather Agent")
+-> thenvoi_send_message(content="What's the weather in Tokyo?", mentions=["@john-doe/weather-agent"])
+
+### Relaying response back
+[Weather Agent]: Tokyo is 15°C and cloudy.
+-> thenvoi_send_event(content="Got weather response. Relaying back to John.", message_type="thought")
+-> thenvoi_send_message(content="The weather in Tokyo is 15°C and cloudy.", mentions=["@john-doe"])
+`;
+
+    // Add memory guidance when memory tools are enabled
+    if (process.env.THENVOI_MEMORY_TOOLS === 'true') {
+      platformInstructions += `
+
+## Platform Memory
+
+You have access to a persistent memory system shared across sessions and agents.
+Use it to store important information that should survive beyond this conversation.
+
+**When to store memories:**
+- User states a preference → \`thenvoi_store_memory(content, system="long_term", type="semantic", segment="user")\`
+- Important event or decision → \`thenvoi_store_memory(content, system="long_term", type="episodic", segment="user")\`
+- Learned workflow or procedure → \`thenvoi_store_memory(content, system="long_term", type="procedural", segment="agent")\`
+
+**When NOT to store:**
+- Trivial or temporary information
+- Information already stored (check with \`thenvoi_list_memories()\` first)
+- Raw conversation content (platform already tracks messages)
+
+**Always include a \`thought\` explaining WHY you're storing this memory.**
+**Add descriptive tags in metadata for searchability.**
+**Use \`thenvoi_supersede_memory(memory_id)\` when information changes instead of creating duplicates.**
+
+Local files (\`CLAUDE.md\`, workspace files) are for this group only.
+Platform memories persist across sessions and are visible to other agents in the organization.
+`;
+    }
+
+    globalClaudeMd = globalClaudeMd
+      ? globalClaudeMd + '\n' + platformInstructions
+      : platformInstructions;
+  }
+
   // Discover additional directories mounted at /workspace/extra/*
   // These are passed to the SDK so their CLAUDE.md files are loaded automatically
   const extraDirs: string[] = [];
@@ -407,7 +525,8 @@ async function runQuery(
         'TeamCreate', 'TeamDelete', 'SendMessage',
         'TodoWrite', 'ToolSearch', 'Skill',
         'NotebookEdit',
-        'mcp__nanoclaw__*'
+        'mcp__nanoclaw__*',
+        ...(thenvoiMcpBridge ? thenvoiMcpBridge.allowedTools : []),
       ],
       env: sdkEnv,
       permissionMode: 'bypassPermissions',
@@ -423,6 +542,7 @@ async function runQuery(
             NANOCLAW_IS_MAIN: containerInput.isMain ? '1' : '0',
           },
         },
+        ...(thenvoiMcpBridge ? { thenvoi: thenvoiMcpBridge.serverConfig } : {}),
       },
       hooks: {
         PreCompact: [{ hooks: [createPreCompactHook(containerInput.assistantName)] }],
