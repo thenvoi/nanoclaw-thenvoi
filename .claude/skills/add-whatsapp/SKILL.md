@@ -186,8 +186,6 @@ AskUserQuestion: Is this a shared phone number (personal WhatsApp) or a dedicate
 - **Shared number** - Your personal WhatsApp number (recommended: use self-chat or a solo group)
 - **Dedicated number** - A separate phone/SIM for the assistant
 
-Remember the user's choice — if **dedicated number**, pass `--dedicated-number` to the register step below.
-
 AskUserQuestion: What trigger word should activate the assistant?
 - **@Andy** - Default trigger
 - **@Claw** - Short and easy
@@ -240,8 +238,7 @@ npx tsx setup/index.ts --step register \
   --channel whatsapp \
   --assistant-name "<name>" \
   --is-main \
-  --no-trigger-required \  # Only for main/self-chat
-  --dedicated-number       # Only if user chose dedicated number
+  --no-trigger-required  # Only for main/self-chat
 ```
 
 For additional groups (trigger-required):
