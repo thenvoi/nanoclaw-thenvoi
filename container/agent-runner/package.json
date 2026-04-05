@@ -12,9 +12,14 @@
     "@anthropic-ai/claude-agent-sdk": "^0.2.92",
     "@modelcontextprotocol/sdk": "^1.12.1",
     "@thenvoi/rest-client": "0.0.113",
-    "@thenvoi/sdk": "file:./vendor/thenvoi-sdk.tgz",
+    "@thenvoi/sdk": "^0.1.6",
     "cron-parser": "^5.0.0",
     "zod": "^4.0.0"
+  },
+  "overrides": {
+    "@thenvoi/sdk": {
+      "@anthropic-ai/sdk": ">=0.78.0"
+    }
   },
   "devDependencies": {
     "@types/node": "^22.10.7",

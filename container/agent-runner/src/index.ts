@@ -433,8 +433,9 @@ async function runQuery(
 
     const restUrl = process.env.THENVOI_REST_URL;
     const baseUrl = restUrl.endsWith('/') ? restUrl : restUrl + '/';
+    const thenvoiApiKey = process.env.THENVOI_API_KEY || 'placeholder';
     // eslint-disable-next-line @typescript-eslint/no-explicit-any -- bind() wrappers widen method signatures
-    const rest = new FernRestAdapter(new ThenvoiClient({ apiKey: 'placeholder', baseUrl }) as any);
+    const rest = new FernRestAdapter(new ThenvoiClient({ apiKey: thenvoiApiKey, baseUrl }) as any);
     const agentTools = new AgentTools({
       roomId: process.env.THENVOI_ROOM_ID,
       rest,
@@ -758,8 +759,8 @@ async function main(): Promise<void> {
     process.exit(1);
   }
 
-  // Credentials are injected by the host's credential proxy via ANTHROPIC_BASE_URL.
-  // No real secrets exist in the container environment.
+  // Credentials are injected by OneCLI gateway (HTTPS proxy) for Anthropic.
+  // Thenvoi API key is passed directly for HTTP targets (local dev).
   const sdkEnv: Record<string, string | undefined> = {
     ...process.env,
     CLAUDE_CODE_AUTO_COMPACT_WINDOW: '165000',
@@ -799,7 +800,8 @@ async function main(): Promise<void> {
 
       const restUrl = process.env.THENVOI_REST_URL || '';
       const baseUrl = restUrl.endsWith('/') ? restUrl : restUrl + '/';
-      const client = new ThenvoiClient({ apiKey: 'placeholder', baseUrl });
+      const thenvoiApiKey = process.env.THENVOI_API_KEY || 'placeholder';
+      const client = new ThenvoiClient({ apiKey: thenvoiApiKey, baseUrl });
       const rest = new FernRestAdapter(client as any); // eslint-disable-line @typescript-eslint/no-explicit-any
       const tools = new AgentTools({
         roomId: process.env.THENVOI_ROOM_ID || '',

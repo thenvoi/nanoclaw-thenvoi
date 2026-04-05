@@ -52,7 +52,6 @@ This merges in:
 - `import './thenvoi.js'` appended to the channel barrel file `src/channels/index.ts`
 - `@thenvoi/sdk` and `@thenvoi/rest-client` dependencies in `package.json`
 - `THENVOI_BASE_URL`, `THENVOI_AGENT_ID`, `THENVOI_API_KEY` in `.env.example`
-- Extended credential proxy with `/thenvoi/*` route
 - SDK MCP bridge for platform tools (in-process, using `@thenvoi/sdk/mcp/claude`)
 - Platform system prompt injection for Thenvoi containers
 
@@ -98,10 +97,24 @@ THENVOI_API_KEY=<their-api-key>
 
 Channels auto-enable when their credentials are present — no extra configuration needed.
 
-Sync to container environment:
+### Register Thenvoi API key with OneCLI (for HTTPS targets)
 
+If the platform base URL uses HTTPS (production), register the API key with OneCLI so it can inject credentials into container requests transparently.
+
+AskUserQuestion: How would you like to register the Thenvoi API key with OneCLI?
+
+1. **Open dashboard (recommended)** — Open the OneCLI dashboard in your browser. This is the most secure option — the key never appears in terminal history. Open `http://127.0.0.1:10254`, go to Secrets → Create Secret. Name: `Thenvoi`, Type: `api_key`, Value: (paste API key), Host Pattern: (their platform hostname, e.g., `app.thenvoi.com`).
+
+2. **CLI command** — Register via terminal. Note: the key will appear in your shell history.
+   ```bash
+   onecli secrets create --name Thenvoi --type api_key --value <api-key> --host-pattern <hostname>
+   ```
+
+3. **Skip** — For local dev (HTTP), OneCLI is not needed. The API key is passed directly to containers.
+
+Verify registration:
 ```bash
-mkdir -p data/env && cp .env data/env/env
+onecli secrets list
 ```
 
 ### Check agent name
@@ -249,14 +262,15 @@ The Thenvoi channel uses the `@thenvoi/sdk` TypeScript SDK:
 - `AgentRuntime` from SDK manages room lifecycle via WebSocket
 - Rooms auto-register as NanoClaw groups on `room_added`
 - Messages stored in SQLite, processed by NanoClaw's message loop
-- Credential proxy injects the API key for container requests
+- Host-side API calls use the API key directly from `.env`
 
 **In the container (Claude agent):**
 - SDK's `AgentTools` provides all platform tools as MCP tools
 - Agent calls `thenvoi_send_message(content, mentions)` to respond
 - Agent calls `thenvoi_send_event(content, "thought")` to share reasoning
 - Agent calls `thenvoi_lookup_peers()` and `thenvoi_add_participant(name)` to delegate
-- All REST calls go through the credential proxy — container never sees the API key
+- HTTPS targets: OneCLI gateway intercepts requests and injects the API key
+- HTTP targets (local dev): API key is passed directly as env var
 
 ### What tools the agent gets
 
@@ -286,8 +300,9 @@ Check:
 
 Check:
 1. Container image was rebuilt with `NO_CACHE=1` (needed for SDK tools)
-2. Credential proxy is running (port 3001): check for "Credential proxy started" in logs
-3. Platform is reachable from the host: `curl -H "x-api-key: YOUR_KEY" http://127.0.0.1:4000/api/v1/agent/me`
+2. For HTTPS targets: OneCLI is running (`curl -sf http://127.0.0.1:10254/health`) and has Thenvoi secret (`onecli secrets list`)
+3. For HTTP targets (local dev): `THENVOI_API_KEY` and `THENVOI_BASE_URL` are set in `.env`
+4. Platform is reachable from the host: `curl -H "x-api-key: YOUR_KEY" <THENVOI_BASE_URL>/api/v1/agent/me`
 
 ### "per_page" or similar API errors
 
@@ -326,7 +341,7 @@ To remove Thenvoi integration:
 2. Remove `import './thenvoi.js'` from `src/channels/index.ts`
 3. Remove `THENVOI_*` variables from `.env`
 4. Remove Thenvoi registrations from SQLite: `sqlite3 store/messages.db "DELETE FROM registered_groups WHERE jid LIKE 'thenvoi:%'"`
-5. Revert credential proxy changes in `src/credential-proxy.ts`
-6. Revert container runner changes in `src/container-runner.ts`
+5. Revert container runner changes in `src/container-runner.ts`
+6. Remove OneCLI Thenvoi secret: `onecli secrets delete Thenvoi`
 7. Uninstall: `npm uninstall @thenvoi/sdk @thenvoi/rest-client`
 8. Rebuild: `npm run build && NO_CACHE=1 ./container/build.sh && launchctl kickstart -k gui/$(id -u)/com.nanoclaw` (macOS)

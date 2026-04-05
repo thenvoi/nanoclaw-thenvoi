@@ -10,7 +10,6 @@ import {
   CONTAINER_IMAGE,
   CONTAINER_MAX_OUTPUT_SIZE,
   CONTAINER_TIMEOUT,
-  CREDENTIAL_PROXY_PORT,
   DATA_DIR,
   GROUPS_DIR,
   IDLE_TIMEOUT,
@@ -261,15 +260,24 @@ async function buildContainerArgs(
     );
   }
 
-  // Thenvoi platform: pass channel info and proxied REST URL
+  // Thenvoi platform: pass channel info and real REST URL
+  // OneCLI handles credential injection for HTTPS targets.
+  // For HTTP targets (local dev), pass the API key directly.
   if (input.chatJid.startsWith('thenvoi:')) {
     const thenvoiEnv = readEnvFile([
       'THENVOI_AGENT_ID',
+      'THENVOI_API_KEY',
+      'THENVOI_BASE_URL',
       'THENVOI_MEMORY_TOOLS',
       'THENVOI_MEMORY_LOAD_ON_START',
       'THENVOI_MEMORY_CONSOLIDATION',
     ]);
     const roomId = input.chatJid.replace('thenvoi:', '');
+    // Rewrite localhost/127.0.0.1 to the Docker host gateway so the
+    // container can reach the host's local dev server.
+    const thenvoiBaseUrl = (thenvoiEnv.THENVOI_BASE_URL || '')
+      .replace(/\/\/localhost([:\/])/g, `//${CONTAINER_HOST_GATEWAY}$1`)
+      .replace(/\/\/127\.0\.0\.1([:\/])/g, `//${CONTAINER_HOST_GATEWAY}$1`);
     args.push(
       '-e',
       'NANOCLAW_CHANNEL=thenvoi',
@@ -278,7 +286,7 @@ async function buildContainerArgs(
       '-e',
       `THENVOI_AGENT_ID=${thenvoiEnv.THENVOI_AGENT_ID || ''}`,
       '-e',
-      `THENVOI_REST_URL=http://${CONTAINER_HOST_GATEWAY}:${CREDENTIAL_PROXY_PORT}/thenvoi`,
+      `THENVOI_REST_URL=${thenvoiBaseUrl}`,
       '-e',
       `THENVOI_MEMORY_TOOLS=${thenvoiEnv.THENVOI_MEMORY_TOOLS || 'false'}`,
       '-e',
@@ -286,6 +294,11 @@ async function buildContainerArgs(
       '-e',
       `THENVOI_MEMORY_CONSOLIDATION=${thenvoiEnv.THENVOI_MEMORY_CONSOLIDATION || 'false'}`,
     );
+    // For HTTP targets (local dev), OneCLI can't intercept — pass API key directly
+    const isHttps = thenvoiBaseUrl.startsWith('https');
+    if (!isHttps && thenvoiEnv.THENVOI_API_KEY) {
+      args.push('-e', `THENVOI_API_KEY=${thenvoiEnv.THENVOI_API_KEY}`);
+    }
   }
 
   // Runtime-specific args for host gateway resolution

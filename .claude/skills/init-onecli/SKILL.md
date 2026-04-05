@@ -167,6 +167,7 @@ Known container-facing credentials:
 |---|---|---|
 | `OPENAI_API_KEY` | `OpenAI` | `api.openai.com` |
 | `PARALLEL_API_KEY` | `Parallel` | `api.parallel.ai` |
+| `THENVOI_API_KEY` | `Thenvoi` | User's platform host (e.g., `app.thenvoi.com`) |
 
 If any of these are found with non-empty values, present them to the user:
 
