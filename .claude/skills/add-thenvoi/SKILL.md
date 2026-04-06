@@ -117,6 +117,39 @@ Verify registration:
 onecli secrets list
 ```
 
+### Fix OneCLI agent secret mode
+
+OneCLI agents default to `secretMode: "selective"`, which only injects the Anthropic API key. Thenvoi requires `secretMode: "all"` so the generic Thenvoi secret is also injected into containers.
+
+The code in `src/index.ts` (`ensureOneCLIAgent`) handles this automatically for new agents. However, if agents were created before the fix (or the auto-fix fails silently), you must fix them manually.
+
+**After NanoClaw starts and registers rooms**, verify that all Thenvoi agents have `secretMode: "all"`:
+
+```bash
+onecli agents list --fields identifier,secretMode
+```
+
+If any `thenvoi-*` agent shows `selective`, fix it:
+
+```bash
+onecli agents set-secret-mode --id <agent-id> --mode all
+```
+
+Or fix all at once:
+
+```bash
+onecli agents list --fields id,secretMode 2>&1 | python3 -c "
+import sys, json
+for a in json.load(sys.stdin):
+    if a.get('secretMode') == 'selective':
+        print(a['id'])
+" | while read id; do
+  onecli agents set-secret-mode --id "$id" --mode all
+done
+```
+
+**Symptoms of wrong secret mode:** Container agents get 401 errors when calling Thenvoi tools (`thenvoi_get_participants`, `thenvoi_send_message`, etc.) and fall back to plain text output via `send_message`.
+
 ### Check agent name
 
 Fetch the agent's name from the platform:
@@ -296,9 +329,11 @@ Check:
 4. Container image was rebuilt after merging (`NO_CACHE=1 ./container/build.sh`)
 5. Service is running: `launchctl list | grep nanoclaw` (macOS) or `systemctl --user status nanoclaw` (Linux)
 
-### Agent responds but can't use platform tools
+### Agent responds but can't use platform tools (401 errors)
 
-Check:
+The most common cause is OneCLI agents having `secretMode: "selective"` instead of `"all"`. Run `onecli agents list --fields identifier,secretMode` and fix any `thenvoi-*` agents showing `selective` — see "Fix OneCLI agent secret mode" in Phase 3.
+
+Other checks:
 1. Container image was rebuilt with `NO_CACHE=1` (needed for SDK tools)
 2. For HTTPS targets: OneCLI is running (`curl -sf http://127.0.0.1:10254/health`) and has Thenvoi secret (`onecli secrets list`)
 3. For HTTP targets (local dev): `THENVOI_API_KEY` and `THENVOI_BASE_URL` are set in `.env`

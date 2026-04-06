@@ -95,12 +95,25 @@ function ensureOneCLIAgent(jid: string, group: RegisteredGroup): void {
       // secrets. OneCLI defaults to "selective" which only includes Anthropic.
       try {
         const apiUrl = ONECLI_URL.replace(/\/+$/, '');
-        const agents = (await fetch(`${apiUrl}/api/agents`).then((r) =>
+        const agentsRaw = await fetch(`${apiUrl}/api/agents`).then((r) =>
           r.json(),
-        )) as {
-          data?: Array<{ id: string; identifier: string; secretMode: string }>;
-        };
-        const agent = agents.data?.find((a) => a.identifier === identifier);
+        );
+        const agentsList: Array<{
+          id: string;
+          identifier: string;
+          secretMode: string;
+        }> = Array.isArray(agentsRaw)
+          ? agentsRaw
+          : ((
+              agentsRaw as {
+                data?: Array<{
+                  id: string;
+                  identifier: string;
+                  secretMode: string;
+                }>;
+              }
+            ).data ?? []);
+        const agent = agentsList.find((a) => a.identifier === identifier);
         if (agent && agent.secretMode !== 'all') {
           await fetch(`${apiUrl}/api/agents/${agent.id}/secret-mode`, {
             method: 'PUT',
