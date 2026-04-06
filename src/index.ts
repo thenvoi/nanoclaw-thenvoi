@@ -98,8 +98,21 @@ function ensureOneCLIAgent(jid: string, group: RegisteredGroup): void {
         const agentsRaw = await fetch(`${apiUrl}/api/agents`).then((r) =>
           r.json(),
         );
-        const agentsList: Array<{ id: string; identifier: string; secretMode: string }> =
-          Array.isArray(agentsRaw) ? agentsRaw : (agentsRaw as { data?: Array<{ id: string; identifier: string; secretMode: string }> }).data ?? [];
+        const agentsList: Array<{
+          id: string;
+          identifier: string;
+          secretMode: string;
+        }> = Array.isArray(agentsRaw)
+          ? agentsRaw
+          : ((
+              agentsRaw as {
+                data?: Array<{
+                  id: string;
+                  identifier: string;
+                  secretMode: string;
+                }>;
+              }
+            ).data ?? []);
         const agent = agentsList.find((a) => a.identifier === identifier);
         if (agent && agent.secretMode !== 'all') {
           await fetch(`${apiUrl}/api/agents/${agent.id}/secret-mode`, {
