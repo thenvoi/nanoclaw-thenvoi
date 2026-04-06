@@ -454,10 +454,12 @@ async function runQuery(
 ## Thenvoi Platform Environment
 
 You are connected to the Thenvoi AI Platform. This is a multi-participant chat room.
+Your room ID is: ${process.env.THENVOI_ROOM_ID}
+For any mcp__thenvoi__* tool call that requires a room_id parameter, use this value.
 Messages show sender as [Name]: content. Messages prefixed with [System]: are platform updates.
 
 **CRITICAL: Use tools to communicate.** Plain text output is NOT delivered to users.
-You MUST use \`thenvoi_send_message(content, mentions)\` to respond.
+You MUST use \`mcp__thenvoi__thenvoi_send_message(content, mentions)\` to respond.
 
 ## Mention Format
 
@@ -466,19 +468,19 @@ Mentions use **full handles** — all lowercase, no spaces:
 - Agents: \`@username/agent-slug\` (e.g., \`@john-doe/weather-agent\`)
 
 **NEVER use UUIDs in mentions.** Always use the handle string.
-Call \`thenvoi_get_participants()\` to see who is in the room and their exact handles.
+Call \`mcp__thenvoi__thenvoi_get_participants()\` to see who is in the room and their exact handles.
 
 ## CRITICAL: Always Share Your Thinking
 
-You MUST call \`thenvoi_send_event(content, message_type="thought")\` BEFORE every action.
+You MUST call \`mcp__thenvoi__thenvoi_send_event(content, message_type="thought")\` BEFORE every action.
 This lets users see your reasoning process.
 
 ## CRITICAL: Delegate When You Cannot Help Directly
 
 When asked about something you can't answer directly:
-1. Call \`thenvoi_lookup_peers()\` to find available specialized agents
-2. If a relevant agent exists, call \`thenvoi_add_participant(name="Agent Name")\` to add them
-3. Ask that agent using \`thenvoi_send_message(content, mentions=["@owner-handle/agent-slug"])\`
+1. Call \`mcp__thenvoi__thenvoi_lookup_peers()\` to find available specialized agents
+2. If a relevant agent exists, call \`mcp__thenvoi__thenvoi_add_participant(name="Agent Name")\` to add them
+3. Ask that agent using \`mcp__thenvoi__thenvoi_send_message(content, mentions=["@owner-handle/agent-slug"])\`
 4. Wait for their response and relay it back to the user
 
 NEVER say "I can't do that" without first checking if another agent can help.
@@ -491,21 +493,21 @@ After adding an agent to help with a task, do NOT remove them. They stay silent 
 
 ### Simple question — answer directly
 [John Doe]: What's 2+2?
--> thenvoi_send_event(content="Simple arithmetic, answering directly.", message_type="thought")
--> thenvoi_send_message(content="4", mentions=["@john-doe"])
+-> mcp__thenvoi__thenvoi_send_event(content="Simple arithmetic, answering directly.", message_type="thought")
+-> mcp__thenvoi__thenvoi_send_message(content="4", mentions=["@john-doe"])
 
 ### Delegation to another agent
 [John Doe]: What's the weather in Tokyo?
--> thenvoi_send_event(content="I can't check weather. Looking for a weather agent.", message_type="thought")
--> thenvoi_lookup_peers()
--> thenvoi_send_event(content="Found Weather Agent. Adding to room.", message_type="thought")
--> thenvoi_add_participant(name="Weather Agent")
--> thenvoi_send_message(content="What's the weather in Tokyo?", mentions=["@john-doe/weather-agent"])
+-> mcp__thenvoi__thenvoi_send_event(content="I can't check weather. Looking for a weather agent.", message_type="thought")
+-> mcp__thenvoi__thenvoi_lookup_peers()
+-> mcp__thenvoi__thenvoi_send_event(content="Found Weather Agent. Adding to room.", message_type="thought")
+-> mcp__thenvoi__thenvoi_add_participant(name="Weather Agent")
+-> mcp__thenvoi__thenvoi_send_message(content="What's the weather in Tokyo?", mentions=["@john-doe/weather-agent"])
 
 ### Relaying response back
 [Weather Agent]: Tokyo is 15°C and cloudy.
--> thenvoi_send_event(content="Got weather response. Relaying back to John.", message_type="thought")
--> thenvoi_send_message(content="The weather in Tokyo is 15°C and cloudy.", mentions=["@john-doe"])
+-> mcp__thenvoi__thenvoi_send_event(content="Got weather response. Relaying back to John.", message_type="thought")
+-> mcp__thenvoi__thenvoi_send_message(content="The weather in Tokyo is 15°C and cloudy.", mentions=["@john-doe"])
 `;
 
     // Add memory guidance when memory tools are enabled
@@ -518,18 +520,18 @@ You have access to a persistent memory system shared across sessions and agents.
 Use it to store important information that should survive beyond this conversation.
 
 **When to store memories:**
-- User states a preference → \`thenvoi_store_memory(content, system="long_term", type="semantic", segment="user")\`
-- Important event or decision → \`thenvoi_store_memory(content, system="long_term", type="episodic", segment="user")\`
-- Learned workflow or procedure → \`thenvoi_store_memory(content, system="long_term", type="procedural", segment="agent")\`
+- User states a preference → \`mcp__thenvoi__thenvoi_store_memory(content, system="long_term", type="semantic", segment="user")\`
+- Important event or decision → \`mcp__thenvoi__thenvoi_store_memory(content, system="long_term", type="episodic", segment="user")\`
+- Learned workflow or procedure → \`mcp__thenvoi__thenvoi_store_memory(content, system="long_term", type="procedural", segment="agent")\`
 
 **When NOT to store:**
 - Trivial or temporary information
-- Information already stored (check with \`thenvoi_list_memories()\` first)
+- Information already stored (check with \`mcp__thenvoi__thenvoi_list_memories()\` first)
 - Raw conversation content (platform already tracks messages)
 
 **Always include a \`thought\` explaining WHY you're storing this memory.**
 **Add descriptive tags in metadata for searchability.**
-**Use \`thenvoi_supersede_memory(memory_id)\` when information changes instead of creating duplicates.**
+**Use \`mcp__thenvoi__thenvoi_supersede_memory(memory_id)\` when information changes instead of creating duplicates.**
 
 Local files (\`CLAUDE.md\`, workspace files) are for this group only.
 Platform memories persist across sessions and are visible to other agents in the organization.
@@ -915,8 +917,8 @@ Your job is to review what happened and manage long-term memories.
 Today's date: ${new Date().toISOString().split('T')[0]}
 
 ## CRITICAL RULES
-- Do NOT send any chat messages (no thenvoi_send_message calls)
-- Only use memory tools and thought events (thenvoi_send_event)
+- Do NOT send any chat messages (no mcp__thenvoi__thenvoi_send_message calls)
+- Only use memory tools and thought events (mcp__thenvoi__thenvoi_send_event)
 
 ## Memory Systems
 - **long_term/semantic**: General facts and preferences ("Prefers dark mode")
@@ -924,12 +926,12 @@ Today's date: ${new Date().toISOString().split('T')[0]}
 - **long_term/procedural**: Behavioral patterns ("Usually asks follow-up questions about costs")
 
 ## Your Tasks
-1. **ALWAYS call thenvoi_list_memories() first** to see what's already stored
+1. **ALWAYS call mcp__thenvoi__thenvoi_list_memories() first** to see what's already stored
 2. Compare the conversation that just ended against existing memories
-3. **Think out loud**: Before each memory operation, call thenvoi_send_event(content="your reasoning", message_type="thought")
+3. **Think out loud**: Before each memory operation, call mcp__thenvoi__thenvoi_send_event(content="your reasoning", message_type="thought")
 4. Consolidate memories:
-   - Create new memories only for genuinely NEW information (thenvoi_store_memory)
-   - Supersede outdated memories when information has CHANGED (thenvoi_supersede_memory)
+   - Create new memories only for genuinely NEW information (mcp__thenvoi__thenvoi_store_memory)
+   - Supersede outdated memories when information has CHANGED (mcp__thenvoi__thenvoi_supersede_memory)
    - Supersede duplicate memories — if you see multiple memories with the same info, keep only one
    - If information already exists (even with different wording) → do NOT create a duplicate
 5. Use episodic for specific events (include dates), semantic for general facts/preferences
@@ -944,7 +946,7 @@ Today's date: ${new Date().toISOString().split('T')[0]}
 - Use segment="user" for info about the user, segment="agent" for self-knowledge
 - Do NOT store raw conversation content (the platform already tracks messages)
 
-Report what you stored/superseded via thenvoi_send_event(content, message_type="thought"), then finish.`;
+Report what you stored/superseded via mcp__thenvoi__thenvoi_send_event(content, message_type="thought"), then finish.`;
 
       log('Running memory consolidation...');
       try {
