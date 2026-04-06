@@ -21,6 +21,8 @@ groups/global/*
 # Secrets
 *.keys.json
 .env
+.env.local
+.env.prod
 
 # Temp files
 .tmp-*
@@ -36,3 +38,4 @@ groups/global/*
 .nanoclaw/
 
 agents-sdk-docs
+container/agent-runner/vendor/

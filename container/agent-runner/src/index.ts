@@ -23,6 +23,7 @@ import {
   PreCompactHookInput,
 } from '@anthropic-ai/claude-agent-sdk';
 import { fileURLToPath } from 'url';
+import type { ThenvoiSdkMcpServer } from '@thenvoi/sdk/mcp/claude';
 
 interface ContainerInput {
   prompt: string;
@@ -378,6 +379,7 @@ async function runQuery(
   containerInput: ContainerInput,
   sdkEnv: Record<string, string | undefined>,
   resumeAt?: string,
+  opts?: { preloadedMemories?: string; isConsolidation?: boolean },
 ): Promise<{
   newSessionId?: string;
   lastAssistantUuid?: string;
@@ -405,7 +407,9 @@ async function runQuery(
     }
     setTimeout(pollIpcDuringQuery, IPC_POLL_MS);
   };
-  setTimeout(pollIpcDuringQuery, IPC_POLL_MS);
+  if (!opts?.isConsolidation) {
+    setTimeout(pollIpcDuringQuery, IPC_POLL_MS);
+  }
 
   let newSessionId: string | undefined;
   let lastAssistantUuid: string | undefined;
@@ -417,6 +421,136 @@ async function runQuery(
   let globalClaudeMd: string | undefined;
   if (!containerInput.isMain && fs.existsSync(globalClaudeMdPath)) {
     globalClaudeMd = fs.readFileSync(globalClaudeMdPath, 'utf-8');
+  }
+
+  // Set up Thenvoi SDK MCP bridge (in-process, managed by SDK)
+  let thenvoiMcpBridge: ThenvoiSdkMcpServer | undefined;
+  if (process.env.NANOCLAW_CHANNEL === 'thenvoi' && process.env.THENVOI_REST_URL && process.env.THENVOI_ROOM_ID) {
+    const { createThenvoiSdkMcpServer } = await import('@thenvoi/sdk/mcp/claude');
+    const { ThenvoiClient } = await import('@thenvoi/rest-client');
+    const { FernRestAdapter } = await import('@thenvoi/sdk/rest');
+    const { AgentTools } = await import('@thenvoi/sdk/runtime');
+
+    const restUrl = process.env.THENVOI_REST_URL;
+    const baseUrl = restUrl.endsWith('/') ? restUrl : restUrl + '/';
+    const thenvoiApiKey = process.env.THENVOI_API_KEY || 'placeholder';
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any -- bind() wrappers widen method signatures
+    const rest = new FernRestAdapter(new ThenvoiClient({ apiKey: thenvoiApiKey, baseUrl }) as any);
+    const agentTools = new AgentTools({
+      roomId: process.env.THENVOI_ROOM_ID,
+      rest,
+      capabilities: { peers: true, contacts: true, memory: process.env.THENVOI_MEMORY_TOOLS === 'true' },
+    });
+    thenvoiMcpBridge = createThenvoiSdkMcpServer({
+      enableMemoryTools: process.env.THENVOI_MEMORY_TOOLS === 'true',
+      getToolsForRoom: () => agentTools,
+    });
+    log(`Thenvoi MCP bridge ready: ${thenvoiMcpBridge.allowedTools.length} tools`);
+  }
+
+  // Thenvoi platform: append instructions that teach the agent to use platform tools
+  if (process.env.NANOCLAW_CHANNEL === 'thenvoi') {
+    let platformInstructions = `
+## Thenvoi Platform Environment
+
+You are connected to the Thenvoi AI Platform. This is a multi-participant chat room.
+Messages show sender as [Name]: content. Messages prefixed with [System]: are platform updates.
+
+**CRITICAL: Use tools to communicate.** Plain text output is NOT delivered to users.
+You MUST use \`thenvoi_send_message(content, mentions)\` to respond.
+
+## Mention Format
+
+Mentions use **full handles** — all lowercase, no spaces:
+- Users: \`@username\` (e.g., \`@john-doe\`)
+- Agents: \`@username/agent-slug\` (e.g., \`@john-doe/weather-agent\`)
+
+**NEVER use UUIDs in mentions.** Always use the handle string.
+Call \`thenvoi_get_participants()\` to see who is in the room and their exact handles.
+
+## CRITICAL: Always Share Your Thinking
+
+You MUST call \`thenvoi_send_event(content, message_type="thought")\` BEFORE every action.
+This lets users see your reasoning process.
+
+## CRITICAL: Delegate When You Cannot Help Directly
+
+When asked about something you can't answer directly:
+1. Call \`thenvoi_lookup_peers()\` to find available specialized agents
+2. If a relevant agent exists, call \`thenvoi_add_participant(name="Agent Name")\` to add them
+3. Ask that agent using \`thenvoi_send_message(content, mentions=["@owner-handle/agent-slug"])\`
+4. Wait for their response and relay it back to the user
+
+NEVER say "I can't do that" without first checking if another agent can help.
+
+## CRITICAL: Do NOT Remove Agents Automatically
+
+After adding an agent to help with a task, do NOT remove them. They stay silent unless mentioned.
+
+## Examples
+
+### Simple question — answer directly
+[John Doe]: What's 2+2?
+-> thenvoi_send_event(content="Simple arithmetic, answering directly.", message_type="thought")
+-> thenvoi_send_message(content="4", mentions=["@john-doe"])
+
+### Delegation to another agent
+[John Doe]: What's the weather in Tokyo?
+-> thenvoi_send_event(content="I can't check weather. Looking for a weather agent.", message_type="thought")
+-> thenvoi_lookup_peers()
+-> thenvoi_send_event(content="Found Weather Agent. Adding to room.", message_type="thought")
+-> thenvoi_add_participant(name="Weather Agent")
+-> thenvoi_send_message(content="What's the weather in Tokyo?", mentions=["@john-doe/weather-agent"])
+
+### Relaying response back
+[Weather Agent]: Tokyo is 15°C and cloudy.
+-> thenvoi_send_event(content="Got weather response. Relaying back to John.", message_type="thought")
+-> thenvoi_send_message(content="The weather in Tokyo is 15°C and cloudy.", mentions=["@john-doe"])
+`;
+
+    // Add memory guidance when memory tools are enabled
+    if (process.env.THENVOI_MEMORY_TOOLS === 'true') {
+      platformInstructions += `
+
+## Platform Memory
+
+You have access to a persistent memory system shared across sessions and agents.
+Use it to store important information that should survive beyond this conversation.
+
+**When to store memories:**
+- User states a preference → \`thenvoi_store_memory(content, system="long_term", type="semantic", segment="user")\`
+- Important event or decision → \`thenvoi_store_memory(content, system="long_term", type="episodic", segment="user")\`
+- Learned workflow or procedure → \`thenvoi_store_memory(content, system="long_term", type="procedural", segment="agent")\`
+
+**When NOT to store:**
+- Trivial or temporary information
+- Information already stored (check with \`thenvoi_list_memories()\` first)
+- Raw conversation content (platform already tracks messages)
+
+**Always include a \`thought\` explaining WHY you're storing this memory.**
+**Add descriptive tags in metadata for searchability.**
+**Use \`thenvoi_supersede_memory(memory_id)\` when information changes instead of creating duplicates.**
+
+Local files (\`CLAUDE.md\`, workspace files) are for this group only.
+Platform memories persist across sessions and are visible to other agents in the organization.
+`;
+    }
+
+    // Inject preloaded memories (fetched once in main() before the query loop)
+    if (opts?.preloadedMemories) {
+      platformInstructions += `
+
+## Existing Memories About This User
+
+${opts.preloadedMemories}
+
+Use these for context. Do NOT re-store information that already exists.
+`;
+    }
+
+    globalClaudeMd = globalClaudeMd
+      ? globalClaudeMd + '\n' + platformInstructions
+      : platformInstructions;
   }
 
   // Discover additional directories mounted at /workspace/extra/*
@@ -469,6 +603,7 @@ async function runQuery(
         'Skill',
         'NotebookEdit',
         'mcp__nanoclaw__*',
+        ...(thenvoiMcpBridge ? thenvoiMcpBridge.allowedTools : []),
       ],
       env: sdkEnv,
       permissionMode: 'bypassPermissions',
@@ -484,6 +619,7 @@ async function runQuery(
             NANOCLAW_IS_MAIN: containerInput.isMain ? '1' : '0',
           },
         },
+        ...(thenvoiMcpBridge ? { thenvoi: thenvoiMcpBridge.serverConfig } : {}),
       },
       hooks: {
         PreCompact: [
@@ -529,11 +665,13 @@ async function runQuery(
       log(
         `Result #${resultCount}: subtype=${message.subtype}${textResult ? ` text=${textResult.slice(0, 200)}` : ''}`,
       );
-      writeOutput({
-        status: 'success',
-        result: textResult || null,
-        newSessionId,
-      });
+      if (!opts?.isConsolidation) {
+        writeOutput({
+          status: 'success',
+          result: textResult || null,
+          newSessionId,
+        });
+      }
     }
   }
 
@@ -621,8 +759,8 @@ async function main(): Promise<void> {
     process.exit(1);
   }
 
-  // Credentials are injected by the host's credential proxy via ANTHROPIC_BASE_URL.
-  // No real secrets exist in the container environment.
+  // Credentials are injected by OneCLI gateway (HTTPS proxy) for Anthropic.
+  // Thenvoi API key is passed directly for HTTP targets (local dev).
   const sdkEnv: Record<string, string | undefined> = {
     ...process.env,
     CLAUDE_CODE_AUTO_COMPACT_WINDOW: '165000',
@@ -650,6 +788,52 @@ async function main(): Promise<void> {
   if (pending.length > 0) {
     log(`Draining ${pending.length} pending IPC messages into initial prompt`);
     prompt += '\n' + pending.join('\n');
+  }
+
+  // Load existing memories before the first query (Thenvoi only, opt-in)
+  let preloadedMemories = '';
+  if (process.env.THENVOI_MEMORY_LOAD_ON_START === 'true' && process.env.NANOCLAW_CHANNEL === 'thenvoi') {
+    try {
+      const { ThenvoiClient } = await import('@thenvoi/rest-client');
+      const { FernRestAdapter } = await import('@thenvoi/sdk/rest');
+      const { AgentTools } = await import('@thenvoi/sdk/runtime');
+
+      const restUrl = process.env.THENVOI_REST_URL || '';
+      const baseUrl = restUrl.endsWith('/') ? restUrl : restUrl + '/';
+      const thenvoiApiKey = process.env.THENVOI_API_KEY || 'placeholder';
+      const client = new ThenvoiClient({ apiKey: thenvoiApiKey, baseUrl });
+      const rest = new FernRestAdapter(client as any); // eslint-disable-line @typescript-eslint/no-explicit-any
+      const tools = new AgentTools({
+        roomId: process.env.THENVOI_ROOM_ID || '',
+        rest,
+        capabilities: { memory: true },
+      });
+      // Fetch participants to get IDs for memory loading
+      const participants = await tools.getParticipants();
+      log(`Room has ${participants.length} participants`);
+
+      const allMemories: string[] = [];
+      for (const participant of participants) {
+        const result = await tools.executeToolCall('thenvoi_list_memories', {
+          subject_id: participant.id, scope: 'subject',
+        }) as { data?: Array<{ content: string; type?: string; metadata?: { tags?: string[] } }> };
+
+        if (result?.data && result.data.length > 0) {
+          const items = result.data.slice(0, 10);
+          const userMemories = items.map((m) =>
+            `- [${m.type || 'memory'}] ${m.content}`
+          ).join('\n');
+          allMemories.push(`### ${participant.name}\n${userMemories}`);
+        }
+      }
+
+      if (allMemories.length > 0) {
+        preloadedMemories = allMemories.join('\n\n');
+        log(`Loaded memories for ${allMemories.length} user(s)`);
+      }
+    } catch (err) {
+      log(`Failed to load memories (continuing without): ${err instanceof Error ? err.message : String(err)}`);
+    }
   }
 
   // Script phase: run script before waking agent
@@ -689,6 +873,7 @@ async function main(): Promise<void> {
         containerInput,
         sdkEnv,
         resumeAt,
+        { preloadedMemories },
       );
       if (queryResult.newSessionId) {
         sessionId = queryResult.newSessionId;
@@ -719,6 +904,55 @@ async function main(): Promise<void> {
 
       log(`Got new message (${nextMessage.length} chars), starting new query`);
       prompt = nextMessage;
+    }
+    // Memory consolidation on exit (Thenvoi only, opt-in)
+    if (process.env.THENVOI_MEMORY_CONSOLIDATION === 'true'
+        && process.env.NANOCLAW_CHANNEL === 'thenvoi'
+        && sessionId) {
+      const consolidationPrompt = `You are now in memory consolidation mode. The conversation has ended.
+Your job is to review what happened and manage long-term memories.
+
+Today's date: ${new Date().toISOString().split('T')[0]}
+
+## CRITICAL RULES
+- Do NOT send any chat messages (no thenvoi_send_message calls)
+- Only use memory tools and thought events (thenvoi_send_event)
+
+## Memory Systems
+- **long_term/semantic**: General facts and preferences ("Prefers dark mode")
+- **long_term/episodic**: Specific dated events ("Discussed project deadline on 2026-03-22")
+- **long_term/procedural**: Behavioral patterns ("Usually asks follow-up questions about costs")
+
+## Your Tasks
+1. **ALWAYS call thenvoi_list_memories() first** to see what's already stored
+2. Compare the conversation that just ended against existing memories
+3. **Think out loud**: Before each memory operation, call thenvoi_send_event(content="your reasoning", message_type="thought")
+4. Consolidate memories:
+   - Create new memories only for genuinely NEW information (thenvoi_store_memory)
+   - Supersede outdated memories when information has CHANGED (thenvoi_supersede_memory)
+   - Supersede duplicate memories — if you see multiple memories with the same info, keep only one
+   - If information already exists (even with different wording) → do NOT create a duplicate
+5. Use episodic for specific events (include dates), semantic for general facts/preferences
+6. **If no new information**: Report "No new information to store" via thought event and finish
+
+## Rules
+- Only store genuinely useful information
+- Include dates in episodic memories
+- Keep memories concise (under 100 characters when possible)
+- Your thought field should explain WHY this memory is useful
+- Always add 2-5 lowercase hyphenated tags (e.g., "preferences", "scheduling", "decisions")
+- Use segment="user" for info about the user, segment="agent" for self-knowledge
+- Do NOT store raw conversation content (the platform already tracks messages)
+
+Report what you stored/superseded via thenvoi_send_event(content, message_type="thought"), then finish.`;
+
+      log('Running memory consolidation...');
+      try {
+        await runQuery(consolidationPrompt, sessionId, mcpServerPath, containerInput, sdkEnv, resumeAt, { isConsolidation: true });
+        log('Memory consolidation complete');
+      } catch (err) {
+        log(`Memory consolidation failed (non-fatal): ${err instanceof Error ? err.message : String(err)}`);
+      }
     }
   } catch (err) {
     const errorMessage = err instanceof Error ? err.message : String(err);

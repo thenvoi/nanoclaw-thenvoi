@@ -39,7 +39,7 @@ WORKDIR /app
 # Copy package files first for better caching
 COPY agent-runner/package*.json ./
 
-# Install dependencies
+# Install dependencies (SDKs come from npm)
 RUN npm install
 
 # Copy source code

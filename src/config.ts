@@ -10,6 +10,13 @@ const envConfig = readEnvFile([
   'ASSISTANT_HAS_OWN_NUMBER',
   'ONECLI_URL',
   'TZ',
+  'THENVOI_CONTACT_STRATEGY',
+  'THENVOI_OWNER_ID',
+  'THENVOI_INTERNAL_AS_THOUGHTS',
+  'THENVOI_MEMORY_TOOLS',
+  'THENVOI_MEMORY_LOAD_ON_START',
+  'THENVOI_MEMORY_CONSOLIDATION',
+  'MAX_CONCURRENT_CONTAINERS',
 ]);
 
 export const ASSISTANT_NAME =
@@ -17,6 +24,33 @@ export const ASSISTANT_NAME =
 export const ASSISTANT_HAS_OWN_NUMBER =
   (process.env.ASSISTANT_HAS_OWN_NUMBER ||
     envConfig.ASSISTANT_HAS_OWN_NUMBER) === 'true';
+
+// Thenvoi contact event strategy: disabled | callback | hub_room
+export const THENVOI_CONTACT_STRATEGY =
+  process.env.THENVOI_CONTACT_STRATEGY ||
+  envConfig.THENVOI_CONTACT_STRATEGY ||
+  'disabled';
+
+// Thenvoi platform owner user ID override (SDK identity ownerUuid is used when unset)
+export const THENVOI_OWNER_ID =
+  process.env.THENVOI_OWNER_ID || envConfig.THENVOI_OWNER_ID || '';
+
+// Publish <internal> tag content as thought events on the platform (default: false)
+export const THENVOI_INTERNAL_AS_THOUGHTS =
+  (process.env.THENVOI_INTERNAL_AS_THOUGHTS ||
+    envConfig.THENVOI_INTERNAL_AS_THOUGHTS) === 'true';
+
+// Memory integration (all default: false)
+export const THENVOI_MEMORY_TOOLS =
+  (process.env.THENVOI_MEMORY_TOOLS || envConfig.THENVOI_MEMORY_TOOLS) ===
+  'true';
+export const THENVOI_MEMORY_LOAD_ON_START =
+  (process.env.THENVOI_MEMORY_LOAD_ON_START ||
+    envConfig.THENVOI_MEMORY_LOAD_ON_START) === 'true';
+export const THENVOI_MEMORY_CONSOLIDATION =
+  (process.env.THENVOI_MEMORY_CONSOLIDATION ||
+    envConfig.THENVOI_MEMORY_CONSOLIDATION) === 'true';
+
 export const POLL_INTERVAL = 2000;
 export const SCHEDULER_POLL_INTERVAL = 60000;
 
@@ -51,8 +85,7 @@ export const CONTAINER_MAX_OUTPUT_SIZE = parseInt(
   process.env.CONTAINER_MAX_OUTPUT_SIZE || '10485760',
   10,
 ); // 10MB default
-export const ONECLI_URL =
-  process.env.ONECLI_URL || envConfig.ONECLI_URL || 'http://localhost:10254';
+export const ONECLI_URL = process.env.ONECLI_URL || envConfig.ONECLI_URL;
 export const MAX_MESSAGES_PER_PROMPT = Math.max(
   1,
   parseInt(process.env.MAX_MESSAGES_PER_PROMPT || '10', 10) || 10,
@@ -61,7 +94,12 @@ export const IPC_POLL_INTERVAL = 1000;
 export const IDLE_TIMEOUT = parseInt(process.env.IDLE_TIMEOUT || '1800000', 10); // 30min default — how long to keep container alive after last result
 export const MAX_CONCURRENT_CONTAINERS = Math.max(
   1,
-  parseInt(process.env.MAX_CONCURRENT_CONTAINERS || '5', 10) || 5,
+  parseInt(
+    process.env.MAX_CONCURRENT_CONTAINERS ||
+      envConfig.MAX_CONCURRENT_CONTAINERS ||
+      '5',
+    10,
+  ) || 5,
 );
 
 function escapeRegex(str: string): string {

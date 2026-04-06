@@ -19,12 +19,14 @@ import {
 import { resolveGroupFolderPath, resolveGroupIpcPath } from './group-folder.js';
 import { logger } from './logger.js';
 import {
+  CONTAINER_HOST_GATEWAY,
   CONTAINER_RUNTIME_BIN,
   hostGatewayArgs,
   readonlyMountArgs,
   stopContainer,
 } from './container-runtime.js';
 import { OneCLI } from '@onecli-sh/sdk';
+import { readEnvFile } from './env.js';
 import { validateAdditionalMounts } from './mount-security.js';
 import { RegisteredGroup } from './types.js';
 
@@ -104,6 +106,16 @@ function buildVolumeMounts(
       containerPath: '/workspace/group',
       readonly: false,
     });
+
+    // Global memory directory — writable for main so it can update shared context
+    const globalDir = path.join(GROUPS_DIR, 'global');
+    if (fs.existsSync(globalDir)) {
+      mounts.push({
+        hostPath: globalDir,
+        containerPath: '/workspace/global',
+        readonly: false,
+      });
+    }
   } else {
     // Other groups only get their own folder
     mounts.push({
@@ -235,6 +247,7 @@ function buildVolumeMounts(
 async function buildContainerArgs(
   mounts: VolumeMount[],
   containerName: string,
+  input: ContainerInput,
   agentIdentifier?: string,
 ): Promise<string[]> {
   const args: string[] = ['run', '-i', '--rm', '--name', containerName];
@@ -255,6 +268,52 @@ async function buildContainerArgs(
       { containerName },
       'OneCLI gateway not reachable — container will have no credentials',
     );
+  }
+
+  // Thenvoi platform: pass channel info and REST URL.
+  // HTTPS (production): OneCLI injects the API key via MITM proxy.
+  //   The Thenvoi generic secret must be registered with OneCLI and agents
+  //   must have secretMode "all" (set by ensureOneCLIAgent on creation).
+  // HTTP (local dev): API key passed directly since OneCLI only intercepts HTTPS.
+  // To test OneCLI locally: run Caddy as HTTPS reverse proxy in front of Phoenix
+  //   and add the mkcert root CA to the OneCLI Docker container trust store
+  //   (/etc/ssl/certs/ca-certificates.crt).
+  if (input.chatJid.startsWith('thenvoi:')) {
+    const thenvoiEnv = readEnvFile([
+      'THENVOI_AGENT_ID',
+      'THENVOI_API_KEY',
+      'THENVOI_BASE_URL',
+      'THENVOI_MEMORY_TOOLS',
+      'THENVOI_MEMORY_LOAD_ON_START',
+      'THENVOI_MEMORY_CONSOLIDATION',
+    ]);
+    const roomId = input.chatJid.replace('thenvoi:', '');
+    // Rewrite localhost/127.0.0.1 to the Docker host gateway so the
+    // container can reach the host's local dev server.
+    const thenvoiBaseUrl = (thenvoiEnv.THENVOI_BASE_URL || '')
+      .replace(/\/\/localhost([:\/])/g, `//${CONTAINER_HOST_GATEWAY}$1`)
+      .replace(/\/\/127\.0\.0\.1([:\/])/g, `//${CONTAINER_HOST_GATEWAY}$1`);
+    args.push(
+      '-e',
+      'NANOCLAW_CHANNEL=thenvoi',
+      '-e',
+      `THENVOI_ROOM_ID=${roomId}`,
+      '-e',
+      `THENVOI_AGENT_ID=${thenvoiEnv.THENVOI_AGENT_ID || ''}`,
+      '-e',
+      `THENVOI_REST_URL=${thenvoiBaseUrl}`,
+      '-e',
+      `THENVOI_MEMORY_TOOLS=${thenvoiEnv.THENVOI_MEMORY_TOOLS || 'false'}`,
+      '-e',
+      `THENVOI_MEMORY_LOAD_ON_START=${thenvoiEnv.THENVOI_MEMORY_LOAD_ON_START || 'false'}`,
+      '-e',
+      `THENVOI_MEMORY_CONSOLIDATION=${thenvoiEnv.THENVOI_MEMORY_CONSOLIDATION || 'false'}`,
+    );
+    // For HTTP targets, OneCLI can't intercept — pass API key directly
+    const isHttps = thenvoiBaseUrl.startsWith('https');
+    if (!isHttps && thenvoiEnv.THENVOI_API_KEY) {
+      args.push('-e', `THENVOI_API_KEY=${thenvoiEnv.THENVOI_API_KEY}`);
+    }
   }
 
   // Runtime-specific args for host gateway resolution
@@ -304,6 +363,7 @@ export async function runContainerAgent(
   const containerArgs = await buildContainerArgs(
     mounts,
     containerName,
+    input,
     agentIdentifier,
   );
 

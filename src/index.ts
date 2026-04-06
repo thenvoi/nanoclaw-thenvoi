@@ -12,6 +12,7 @@ import {
   MAX_MESSAGES_PER_PROMPT,
   ONECLI_URL,
   POLL_INTERVAL,
+  THENVOI_INTERNAL_AS_THOUGHTS,
   TIMEZONE,
 } from './config.js';
 import './channels/index.js';
@@ -39,6 +40,7 @@ import {
   getMessagesSince,
   getNewMessages,
   getRouterState,
+  deleteRegisteredGroup,
   initDatabase,
   setRegisteredGroup,
   setRouterState,
@@ -84,11 +86,31 @@ function ensureOneCLIAgent(jid: string, group: RegisteredGroup): void {
   if (group.isMain) return;
   const identifier = group.folder.toLowerCase().replace(/_/g, '-');
   onecli.ensureAgent({ name: group.name, identifier }).then(
-    (res) => {
+    async (res) => {
       logger.info(
         { jid, identifier, created: res.created },
         'OneCLI agent ensured',
       );
+      // Ensure agent has secretMode "all" so it gets Thenvoi and all other
+      // secrets. OneCLI defaults to "selective" which only includes Anthropic.
+      try {
+        const apiUrl = ONECLI_URL.replace(/\/+$/, '');
+        const agents = (await fetch(`${apiUrl}/api/agents`).then((r) =>
+          r.json(),
+        )) as {
+          data?: Array<{ id: string; identifier: string; secretMode: string }>;
+        };
+        const agent = agents.data?.find((a) => a.identifier === identifier);
+        if (agent && agent.secretMode !== 'all') {
+          await fetch(`${apiUrl}/api/agents/${agent.id}/secret-mode`, {
+            method: 'PUT',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ mode: 'all' }),
+          });
+        }
+      } catch {
+        // Best-effort — agent works without this, just with fewer secrets
+      }
     },
     (err) => {
       logger.debug(
@@ -162,13 +184,23 @@ function registerGroup(jid: string, group: RegisteredGroup): void {
 
   // Copy CLAUDE.md template into the new group folder so agents have
   // identity and instructions from the first run.  (Fixes #1391)
+  // Thenvoi rooms get a platform-specific template; others get global/main.
   const groupMdFile = path.join(groupDir, 'CLAUDE.md');
   if (!fs.existsSync(groupMdFile)) {
-    const templateFile = path.join(
-      GROUPS_DIR,
-      group.isMain ? 'main' : 'global',
-      'CLAUDE.md',
-    );
+    let templateFile: string | null = null;
+    if (jid.startsWith('thenvoi:')) {
+      const thenvoiTemplate = path.join(GROUPS_DIR, 'thenvoi', 'CLAUDE.md');
+      if (fs.existsSync(thenvoiTemplate)) {
+        templateFile = thenvoiTemplate;
+      }
+    }
+    if (!templateFile) {
+      templateFile = path.join(
+        GROUPS_DIR,
+        group.isMain ? 'main' : 'global',
+        'CLAUDE.md',
+      );
+    }
     if (fs.existsSync(templateFile)) {
       let content = fs.readFileSync(templateFile, 'utf-8');
       if (ASSISTANT_NAME !== 'Andy') {
@@ -186,6 +218,20 @@ function registerGroup(jid: string, group: RegisteredGroup): void {
   logger.info(
     { jid, name: group.name, folder: group.folder },
     'Group registered',
+  );
+}
+
+function deregisterGroup(jid: string): void {
+  const group = registeredGroups[jid];
+  if (!group) return;
+
+  delete registeredGroups[jid];
+  deleteRegisteredGroup(jid);
+
+  // Group folder and files are kept for history
+  logger.info(
+    { jid, name: group.name, folder: group.folder },
+    'Group deregistered',
   );
 }
 
@@ -290,10 +336,32 @@ async function processGroupMessages(chatJid: string): Promise<boolean> {
         typeof result.result === 'string'
           ? result.result
           : JSON.stringify(result.result);
+      // For Thenvoi groups: optionally publish <internal> content as thought events
+      if (
+        chatJid.startsWith('thenvoi:') &&
+        THENVOI_INTERNAL_AS_THOUGHTS &&
+        channel.sendEvent
+      ) {
+        for (const match of raw.matchAll(/<internal>([\s\S]*?)<\/internal>/g)) {
+          const thought = match[1].trim();
+          if (thought) {
+            channel
+              .sendEvent(chatJid, thought, 'thought')
+              .catch((err) =>
+                logger.warn(
+                  { err, chatJid },
+                  'Failed to publish internal thought',
+                ),
+              );
+          }
+        }
+      }
+
       // Strip <internal>...</internal> blocks — agent uses these for internal reasoning
       const text = raw.replace(/<internal>[\s\S]*?<\/internal>/g, '').trim();
       logger.info({ group: group.name }, `Agent output: ${raw.length} chars`);
-      if (text) {
+      // Thenvoi groups: agent sends messages via platform tools, not stdout
+      if (text && !chatJid.startsWith('thenvoi:')) {
         await channel.sendMessage(chatJid, text);
         outputSentToUser = true;
       }
@@ -672,6 +740,8 @@ async function main(): Promise<void> {
       isGroup?: boolean,
     ) => storeChatMetadata(chatJid, timestamp, name, channel, isGroup),
     registeredGroups: () => registeredGroups,
+    registerGroup,
+    deregisterGroup,
   };
 
   // Create and connect all registered channels.
