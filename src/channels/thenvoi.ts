@@ -242,6 +242,7 @@ registerChannel('thenvoi', (opts) => {
 
         async onSessionCleanup(roomId) {
           logger.info({ roomId }, 'Thenvoi: session cleanup');
+          activeRoomIds.delete(roomId);
           opts.deregisterGroup?.(`thenvoi:${roomId}`);
         },
 
@@ -274,6 +275,18 @@ registerChannel('thenvoi', (opts) => {
             },
             'Thenvoi: participant added',
           );
+
+          // If the agent itself was re-added, re-register the group
+          if (participant.id === agentId) {
+            activeRoomIds.add(roomId);
+            const jid = `thenvoi:${roomId}`;
+            ensureGroupRegistered(jid, roomId, undefined, opts);
+            logger.info(
+              { roomId },
+              'Thenvoi: agent re-added to room, re-registered',
+            );
+          }
+
           if (!THENVOI_MEMORY_LOAD_ON_START) return;
 
           const jid = `thenvoi:${roomId}`;
