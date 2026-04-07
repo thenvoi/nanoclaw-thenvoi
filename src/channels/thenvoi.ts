@@ -206,6 +206,10 @@ registerChannel('thenvoi', (opts) => {
           const jid = `thenvoi:${roomId}`;
           const title =
             typeof payload?.title === 'string' ? payload.title : undefined;
+          logger.info(
+            { roomId, title, activeRooms: activeRoomIds.size },
+            'Thenvoi: room joined',
+          );
           ensureGroupRegistered(jid, roomId, title, opts);
           opts.onChatMetadata(
             jid,
@@ -219,6 +223,11 @@ registerChannel('thenvoi', (opts) => {
         },
 
         onRoomLeft(roomId) {
+          activeRoomIds.delete(roomId);
+          logger.info(
+            { roomId, activeRooms: activeRoomIds.size },
+            'Thenvoi: room left',
+          );
           opts.deregisterGroup?.(`thenvoi:${roomId}`);
           // If the hub room was deleted, clear persisted ID so it's re-created
           if (hubRoomId === roomId) {
@@ -232,6 +241,7 @@ registerChannel('thenvoi', (opts) => {
         },
 
         async onSessionCleanup(roomId) {
+          logger.info({ roomId }, 'Thenvoi: session cleanup');
           opts.deregisterGroup?.(`thenvoi:${roomId}`);
         },
 
@@ -239,7 +249,27 @@ registerChannel('thenvoi', (opts) => {
           await handleContactEvent(event, link, opts, agentId);
         },
 
+        onParticipantRemoved(roomId, participantId) {
+          logger.info(
+            { roomId, participantId },
+            'Thenvoi: participant removed',
+          );
+          // If the agent itself was removed, treat as room leave
+          if (participantId === agentId) {
+            logger.info(
+              { roomId },
+              'Thenvoi: agent was removed from room, deregistering',
+            );
+            activeRoomIds.delete(roomId);
+            opts.deregisterGroup?.(`thenvoi:${roomId}`);
+          }
+        },
+
         async onParticipantAdded(roomId, participant) {
+          logger.info(
+            { roomId, participant: participant.name, participantId: participant.id },
+            'Thenvoi: participant added',
+          );
           if (!THENVOI_MEMORY_LOAD_ON_START) return;
 
           const jid = `thenvoi:${roomId}`;
