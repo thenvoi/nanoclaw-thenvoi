@@ -611,14 +611,14 @@ You manage contact requests for this agent. When you receive messages
 about contact events, evaluate them and take action.
 
 ## Tools
-- \`thenvoi_respond_contact_request(action, request_id)\` — approve/reject requests
-- \`thenvoi_list_contact_requests()\` — see pending requests
-- \`thenvoi_list_contacts()\` — see current contacts
+- \`mcp__thenvoi__thenvoi_respond_contact_request(action, request_id)\` — approve/reject requests
+- \`mcp__thenvoi__thenvoi_list_contact_requests()\` — see pending requests
+- \`mcp__thenvoi__thenvoi_list_contacts()\` — see current contacts
 
 ## Rules
 - Evaluate each request based on the sender and their message
 - When in doubt, approve — the owner can remove contacts later
-- Report your decisions via \`thenvoi_send_message\`
+- Report your decisions via \`mcp__thenvoi__thenvoi_send_message\`
 - Do NOT add/remove participants in this room
 - Do NOT delegate to other agents
 `,
