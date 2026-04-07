@@ -267,7 +267,11 @@ registerChannel('thenvoi', (opts) => {
 
         async onParticipantAdded(roomId, participant) {
           logger.info(
-            { roomId, participant: participant.name, participantId: participant.id },
+            {
+              roomId,
+              participant: participant.name,
+              participantId: participant.id,
+            },
             'Thenvoi: participant added',
           );
           if (!THENVOI_MEMORY_LOAD_ON_START) return;
