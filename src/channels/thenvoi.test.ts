@@ -18,6 +18,13 @@ let onParticipantAddedCallback:
       },
     ) => Promise<void>)
   | null = null;
+let onParticipantRemovedCallback:
+  | ((roomId: string, participantId: string) => void)
+  | null = null;
+let onRoomJoinedCallback:
+  | ((roomId: string, payload?: { title?: string; inserted_at?: string }) => void)
+  | null = null;
+let onRoomLeftCallback: ((roomId: string) => void) | null = null;
 
 const configMock = vi.hoisted(() => ({
   ASSISTANT_NAME: 'Andy',
@@ -70,11 +77,17 @@ vi.mock('@thenvoi/sdk', () => ({
         handle?: string | null;
       },
     ) => Promise<void>;
+    onParticipantRemoved?: (roomId: string, participantId: string) => void;
+    onRoomJoined?: (roomId: string, payload?: unknown) => void;
+    onRoomLeft?: (roomId: string) => void;
   }) {
     onExecuteCallback = opts.onExecute;
     onSessionCleanupCallback = opts.onSessionCleanup ?? null;
     onContactEventCallback = opts.onContactEvent ?? null;
     onParticipantAddedCallback = opts.onParticipantAdded ?? null;
+    onParticipantRemovedCallback = opts.onParticipantRemoved ?? null;
+    onRoomJoinedCallback = opts.onRoomJoined ?? null;
+    onRoomLeftCallback = opts.onRoomLeft ?? null;
     return mockRuntime;
   }),
 }));
@@ -125,6 +138,9 @@ describe('Thenvoi Channel', () => {
     onSessionCleanupCallback = null;
     onContactEventCallback = null;
     onParticipantAddedCallback = null;
+    onParticipantRemovedCallback = null;
+    onRoomJoinedCallback = null;
+    onRoomLeftCallback = null;
     configMock.THENVOI_CONTACT_STRATEGY = 'disabled';
     configMock.THENVOI_OWNER_ID = '';
     configMock.THENVOI_MEMORY_LOAD_ON_START = false;
@@ -681,6 +697,160 @@ describe('Thenvoi Channel', () => {
       // Indices 0, 3, 6, 9 have no type → should show [memory] fallback
       expect(content).toContain('[memory]');
       expect(content).toContain('[semantic]');
+    });
+  });
+
+  describe('agent removal and re-addition', () => {
+    function createChannelWithRegister() {
+      const registerGroupFn = vi.fn();
+      const deregisterGroupFn = vi.fn();
+      const ch = getChannelFactory('thenvoi')!({
+        onMessage,
+        onChatMetadata,
+        registeredGroups,
+        registerGroup: registerGroupFn,
+        deregisterGroup: deregisterGroupFn,
+      });
+      return { ch: ch!, registerGroupFn, deregisterGroupFn };
+    }
+
+    it('captures onParticipantRemoved callback', async () => {
+      const { ch } = createChannelWithRegister();
+      await ch.connect();
+      expect(onParticipantRemovedCallback).toBeInstanceOf(Function);
+    });
+
+    it('captures onRoomJoined and onRoomLeft callbacks', async () => {
+      const { ch } = createChannelWithRegister();
+      await ch.connect();
+      expect(onRoomJoinedCallback).toBeInstanceOf(Function);
+      expect(onRoomLeftCallback).toBeInstanceOf(Function);
+    });
+
+    it('deregisters group when the agent itself is removed', async () => {
+      const { ch, deregisterGroupFn } = createChannelWithRegister();
+      await ch.connect();
+
+      // First join the room
+      onRoomJoinedCallback!('room-1', { title: 'Test Room' });
+
+      // Then remove the agent (agentId = 'agent-123' from env)
+      onParticipantRemovedCallback!('room-1', 'agent-123');
+
+      expect(deregisterGroupFn).toHaveBeenCalledWith('thenvoi:room-1');
+    });
+
+    it('does not deregister when a different participant is removed', async () => {
+      const { ch, deregisterGroupFn } = createChannelWithRegister();
+      await ch.connect();
+      deregisterGroupFn.mockClear(); // clear any calls from connect() stale cleanup
+
+      onRoomJoinedCallback!('room-1', { title: 'Test Room' });
+      onParticipantRemovedCallback!('room-1', 'other-user-456');
+
+      expect(deregisterGroupFn).not.toHaveBeenCalled();
+    });
+
+    it('re-registers group when agent is re-added after removal', async () => {
+      const { ch, registerGroupFn, deregisterGroupFn } =
+        createChannelWithRegister();
+      // Start with group registered
+      registeredGroups.mockReturnValue({
+        'thenvoi:room-1': { name: 'Test Room', folder: 'thenvoi_room1' },
+      });
+      await ch.connect();
+
+      // Join, then get removed
+      onRoomJoinedCallback!('room-1', { title: 'Test Room' });
+      onParticipantRemovedCallback!('room-1', 'agent-123');
+      expect(deregisterGroupFn).toHaveBeenCalledWith('thenvoi:room-1');
+
+      // Simulate deregistration — group no longer in the map
+      registeredGroups.mockReturnValue({});
+      registerGroupFn.mockClear();
+
+      // Re-add agent
+      await onParticipantAddedCallback!('room-1', {
+        id: 'agent-123',
+        name: 'Andy',
+        type: 'Agent',
+        handle: '@vlad/andy',
+      });
+
+      expect(registerGroupFn).toHaveBeenCalledWith(
+        'thenvoi:room-1',
+        expect.objectContaining({
+          folder: expect.stringMatching(/^thenvoi_/),
+          requiresTrigger: false,
+        }),
+      );
+    });
+
+    it('scheduled task fails after agent removal (group not found)', async () => {
+      const { ch, deregisterGroupFn } = createChannelWithRegister();
+      registeredGroups.mockReturnValue({
+        'thenvoi:room-1': { name: 'Test Room', folder: 'thenvoi_room1' },
+      });
+      await ch.connect();
+
+      onRoomJoinedCallback!('room-1', { title: 'Test Room' });
+      onParticipantRemovedCallback!('room-1', 'agent-123');
+
+      expect(deregisterGroupFn).toHaveBeenCalledWith('thenvoi:room-1');
+
+      // After deregistration, isConnected still works but the group is gone
+      expect(ch.isConnected()).toBe(true);
+    });
+  });
+
+  describe('room lifecycle', () => {
+    function createChannelWithRegister() {
+      const registerGroupFn = vi.fn();
+      const deregisterGroupFn = vi.fn();
+      const ch = getChannelFactory('thenvoi')!({
+        onMessage,
+        onChatMetadata,
+        registeredGroups,
+        registerGroup: registerGroupFn,
+        deregisterGroup: deregisterGroupFn,
+      });
+      return { ch: ch!, registerGroupFn, deregisterGroupFn };
+    }
+
+    it('registers group on room joined', async () => {
+      const { ch, registerGroupFn } = createChannelWithRegister();
+      await ch.connect();
+
+      onRoomJoinedCallback!('room-new', { title: 'New Room' });
+
+      expect(registerGroupFn).toHaveBeenCalledWith(
+        'thenvoi:room-new',
+        expect.objectContaining({
+          name: 'New Room',
+          folder: expect.stringMatching(/^thenvoi_/),
+          requiresTrigger: false,
+        }),
+      );
+    });
+
+    it('deregisters group on room left', async () => {
+      const { ch, deregisterGroupFn } = createChannelWithRegister();
+      await ch.connect();
+
+      onRoomJoinedCallback!('room-1', { title: 'Test Room' });
+      onRoomLeftCallback!('room-1');
+
+      expect(deregisterGroupFn).toHaveBeenCalledWith('thenvoi:room-1');
+    });
+
+    it('deregisters group on session cleanup', async () => {
+      const { ch, deregisterGroupFn } = createChannelWithRegister();
+      await ch.connect();
+
+      onRoomJoinedCallback!('room-1', { title: 'Test Room' });
+      await onSessionCleanupCallback!('room-1');
+
+      expect(deregisterGroupFn).toHaveBeenCalledWith('thenvoi:room-1');
     });
   });
 });
