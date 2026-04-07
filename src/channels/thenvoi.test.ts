@@ -22,7 +22,10 @@ let onParticipantRemovedCallback:
   | ((roomId: string, participantId: string) => void)
   | null = null;
 let onRoomJoinedCallback:
-  | ((roomId: string, payload?: { title?: string; inserted_at?: string }) => void)
+  | ((
+      roomId: string,
+      payload?: { title?: string; inserted_at?: string },
+    ) => void)
   | null = null;
 let onRoomLeftCallback: ((roomId: string) => void) | null = null;
 
