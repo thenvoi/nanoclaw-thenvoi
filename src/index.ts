@@ -114,6 +114,12 @@ function ensureOneCLIAgent(jid: string, group: RegisteredGroup): void {
               }
             ).data ?? []);
         const agent = agentsList.find((a) => a.identifier === identifier);
+        if (!agent) {
+          logger.warn(
+            { identifier, agentCount: agentsList.length },
+            'OneCLI agent not found in list after creation — secretMode not updated',
+          );
+        }
         if (agent && agent.secretMode !== 'all') {
           await fetch(`${apiUrl}/api/agents/${agent.id}/secret-mode`, {
             method: 'PUT',
