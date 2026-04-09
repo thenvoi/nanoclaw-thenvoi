@@ -73,6 +73,7 @@ export interface SchedulerDependencies {
     groupFolder: string,
   ) => void;
   sendMessage: (jid: string, text: string) => Promise<void>;
+  awaitOneCLIAgentReady?: (group: RegisteredGroup) => Promise<void>;
 }
 
 async function runTask(
@@ -168,6 +169,9 @@ async function runTask(
       deps.queue.closeStdin(task.chat_jid);
     }, TASK_CLOSE_DELAY_MS);
   };
+
+  // Wait for OneCLI agent setup before spawning container (prevents 401 on first run)
+  await deps.awaitOneCLIAgentReady?.(group);
 
   try {
     const output = await runContainerAgent(
