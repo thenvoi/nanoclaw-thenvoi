@@ -540,12 +540,19 @@ Use it to store important information that should survive beyond this conversati
 
 **When NOT to store:**
 - Trivial or temporary information
-- Information already stored (check with \`mcp__thenvoi__thenvoi_list_memories()\` first)
+- Information already stored (check existing memories first)
 - Raw conversation content (platform already tracks messages)
 
-**Always include a \`thought\` explaining WHY you're storing this memory.**
-**Add descriptive tags in metadata for searchability.**
-**Use \`mcp__thenvoi__thenvoi_supersede_memory(memory_id)\` when information changes instead of creating duplicates.**
+**Querying memories:**
+- To find memories about a specific person, pass their \`subject_id\` (UUID): \`mcp__thenvoi__thenvoi_list_memories(subject_id="UUID", scope="subject")\`
+- Without \`subject_id\`, you only get organization-wide memories (usually empty)
+- Get participant UUIDs from \`mcp__thenvoi__thenvoi_get_participants()\` or from the preloaded memory headers above
+
+**Storing memories:**
+- Always include a \`thought\` explaining WHY you're storing this memory
+- Always include \`subject_id\` — the UUID of the person the memory is about
+- Add descriptive tags in metadata for searchability
+- Use \`mcp__thenvoi__thenvoi_supersede_memory(memory_id)\` when information changes instead of creating duplicates
 
 Platform memories persist across sessions and are visible to other agents in the organization.
 `;
@@ -887,7 +894,8 @@ async function main(): Promise<void> {
           const userMemories = items.map((m) =>
             `- [${m.type || 'memory'}] ${m.content}`
           ).join('\n');
-          allMemories.push(`### ${participant.name}\n${userMemories}`);
+          const handle = participant.handle ? `, handle: ${participant.handle}` : '';
+          allMemories.push(`### ${participant.name} (id: ${participant.id}${handle})\n${userMemories}`);
         }
       }
 
