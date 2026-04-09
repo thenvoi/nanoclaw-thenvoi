@@ -151,7 +151,11 @@ function ensureOneCLIAgent(jid: string, group: RegisteredGroup): void {
       }
     } catch (err) {
       logger.warn(
-        { jid, identifier, err: err instanceof Error ? err.stack : String(err) },
+        {
+          jid,
+          identifier,
+          err: err instanceof Error ? err.stack : String(err),
+        },
         'OneCLI agent ensure failed',
       );
     } finally {
