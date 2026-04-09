@@ -128,16 +128,20 @@ registerChannel('thenvoi', (opts) => {
     }
 
     try {
-      const participants = (await link.rest.listChatParticipants(roomId)).filter(
+      const participants = (
+        await link.rest.listChatParticipants(roomId)
+      ).filter(
         (participant) =>
           !('status' in participant) || participant.status !== 'removed',
       );
       const ownerPresent = participants.some(
-        (participant) => participant.id === ownerId && participant.type === 'User',
+        (participant) =>
+          participant.id === ownerId && participant.type === 'User',
       );
       if (!ownerPresent) return false;
       const otherParticipants = participants.filter(
-        (participant) => participant.id !== ownerId && participant.id !== agentId,
+        (participant) =>
+          participant.id !== ownerId && participant.id !== agentId,
       );
       return otherParticipants.length === 0;
     } catch (err) {
@@ -167,7 +171,11 @@ registerChannel('thenvoi', (opts) => {
     if (!previous || !next) return;
     if (previous.isMain === next.isMain) return;
     logger.info(
-      { roomId, wasMain: previous.isMain === true, isMain: next.isMain === true },
+      {
+        roomId,
+        wasMain: previous.isMain === true,
+        isMain: next.isMain === true,
+      },
       'Thenvoi: room privilege changed, clearing persisted session for next spawn',
     );
     deleteSession(next.folder);

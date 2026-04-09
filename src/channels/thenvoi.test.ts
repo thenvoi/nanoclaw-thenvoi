@@ -818,7 +818,9 @@ describe('Thenvoi Channel', () => {
   });
 
   describe('room lifecycle', () => {
-    function createChannelWithRegister(initialGroups: Record<string, unknown> = {}) {
+    function createChannelWithRegister(
+      initialGroups: Record<string, unknown> = {},
+    ) {
       let groups = initialGroups as ReturnType<typeof registeredGroups>;
       registeredGroups.mockImplementation(() => groups);
       const registerGroupFn = vi.fn((jid: string, group: unknown) => {
