@@ -82,62 +82,110 @@ const queue = new GroupQueue();
 
 const onecli = new OneCLI({ url: ONECLI_URL });
 
+// Pending OneCLI agent setup promises, keyed by group folder.
+// Container spawning awaits these to prevent the race where a container
+// starts before the agent's secretMode is upgraded to "all".
+const pendingOneCLISetup = new Map<string, Promise<void>>();
+
+const ONECLI_SETUP_TIMEOUT_MS = 10_000;
+
 function ensureOneCLIAgent(jid: string, group: RegisteredGroup): void {
   if (group.isMain) return;
   const identifier = group.folder.toLowerCase().replace(/_/g, '-');
-  onecli.ensureAgent({ name: group.name, identifier }).then(
-    async (res) => {
+  const promise = (async () => {
+    try {
+      const res = await onecli.ensureAgent({ name: group.name, identifier });
       logger.info(
         { jid, identifier, created: res.created },
         'OneCLI agent ensured',
       );
       // Ensure agent has secretMode "all" so it gets Thenvoi and all other
       // secrets. OneCLI defaults to "selective" which only includes Anthropic.
-      try {
-        const apiUrl = ONECLI_URL.replace(/\/+$/, '');
-        const agentsRaw = await fetch(`${apiUrl}/api/agents`).then((r) =>
-          r.json(),
+      const apiUrl = ONECLI_URL.replace(/\/+$/, '');
+      const agentsRaw = await fetch(`${apiUrl}/api/agents`).then((r) =>
+        r.json(),
+      );
+      const agentsList: Array<{
+        id: string;
+        identifier: string;
+        secretMode: string;
+      }> = Array.isArray(agentsRaw)
+        ? agentsRaw
+        : ((
+            agentsRaw as {
+              data?: Array<{
+                id: string;
+                identifier: string;
+                secretMode: string;
+              }>;
+            }
+          ).data ?? []);
+      const agent = agentsList.find((a) => a.identifier === identifier);
+      if (!agent) {
+        logger.warn(
+          { identifier, agentCount: agentsList.length },
+          'OneCLI agent not found in list after creation — secretMode not updated',
         );
-        const agentsList: Array<{
-          id: string;
-          identifier: string;
-          secretMode: string;
-        }> = Array.isArray(agentsRaw)
-          ? agentsRaw
-          : ((
-              agentsRaw as {
-                data?: Array<{
-                  id: string;
-                  identifier: string;
-                  secretMode: string;
-                }>;
-              }
-            ).data ?? []);
-        const agent = agentsList.find((a) => a.identifier === identifier);
-        if (!agent) {
-          logger.warn(
-            { identifier, agentCount: agentsList.length },
-            'OneCLI agent not found in list after creation — secretMode not updated',
-          );
-        }
-        if (agent && agent.secretMode !== 'all') {
-          await fetch(`${apiUrl}/api/agents/${agent.id}/secret-mode`, {
-            method: 'PUT',
+      }
+      if (agent && agent.secretMode !== 'all') {
+        const resp = await fetch(
+          `${apiUrl}/api/agents/${agent.id}/secret-mode`,
+          {
+            method: 'PATCH',
             headers: { 'Content-Type': 'application/json' },
             body: JSON.stringify({ mode: 'all' }),
-          });
+          },
+        );
+        if (resp.ok) {
+          logger.info(
+            { identifier },
+            'OneCLI agent secretMode upgraded to all',
+          );
+        } else {
+          const body = await resp.text().catch(() => '');
+          logger.warn(
+            { identifier, status: resp.status, body },
+            'OneCLI agent secretMode upgrade failed',
+          );
         }
-      } catch {
-        // Best-effort — agent works without this, just with fewer secrets
       }
-    },
-    (err) => {
-      logger.debug(
-        { jid, identifier, err: String(err) },
-        'OneCLI agent ensure skipped',
+    } catch (err) {
+      logger.warn(
+        { jid, identifier, err: err instanceof Error ? err.stack : String(err) },
+        'OneCLI agent ensure failed',
       );
-    },
-  );
+    } finally {
+      pendingOneCLISetup.delete(group.folder);
+    }
+  })();
+  pendingOneCLISetup.set(group.folder, promise);
+}
+
+/**
+ * Wait for any pending OneCLI agent setup to complete for this group.
+ * Called before container spawn so the agent's secretMode is ready.
+ * Bounded by timeout to avoid blocking indefinitely if OneCLI is down —
+ * in that case the container proceeds without the upgrade (best-effort).
+ */
+async function awaitOneCLIAgentReady(group: RegisteredGroup): Promise<void> {
+  const pending = pendingOneCLISetup.get(group.folder);
+  if (!pending) return;
+  try {
+    await Promise.race([
+      pending,
+      new Promise<void>((_, reject) =>
+        setTimeout(
+          () => reject(new Error('OneCLI agent setup timed out')),
+          ONECLI_SETUP_TIMEOUT_MS,
+        ),
+      ),
+    ]);
+  } catch (err) {
+    logger.warn(
+      { group: group.folder, err: String(err) },
+      'OneCLI agent setup did not complete before container spawn',
+    );
+  }
 }
 
 function loadState(): void {
@@ -469,6 +517,10 @@ async function runAgent(
       }
     : undefined;
 
+  // Wait for OneCLI agent setup (secretMode upgrade) to complete before
+  // spawning the container. Prevents 401 errors on first message in a new room.
+  await awaitOneCLIAgentReady(group);
+
   try {
     const output = await runContainerAgent(
       group,
@@ -791,6 +843,7 @@ async function main(): Promise<void> {
     queue,
     onProcess: (groupJid, proc, containerName, groupFolder) =>
       queue.registerProcess(groupJid, proc, containerName, groupFolder),
+    awaitOneCLIAgentReady,
     sendMessage: async (jid, rawText) => {
       const channel = findChannel(channels, jid);
       if (!channel) {
