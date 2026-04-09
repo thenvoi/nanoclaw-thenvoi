@@ -75,6 +75,10 @@ No `##` headings. No `[links](url)`. No `**double stars**`.
 
 Standard Markdown works: `**bold**`, `*italic*`, `[links](url)`, `# headings`.
 
+### Thenvoi Platform channels (folder starts with `thenvoi_`)
+
+Do NOT use plain text output — it will not be delivered. Use the platform tools (see system prompt) to send messages. No special formatting needed — the platform renders standard Markdown.
+
 ---
 
 ## Task Scripts
