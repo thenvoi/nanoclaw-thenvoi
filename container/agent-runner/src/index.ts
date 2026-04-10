@@ -469,11 +469,14 @@ Messages show sender as [Name]: content. Messages prefixed with [System]: are pl
 You MUST use \`mcp__thenvoi__thenvoi_send_message(content, mentions)\` to respond.
 
 **Workspace scope:** \`/workspace/group\` is room-local for this Thenvoi chat. \`/workspace/global\` is shared across Thenvoi conversations in this NanoClaw instance.
+- In main rooms, \`/workspace/global\` is writable.
+- In non-main rooms, \`/workspace/global\` is read-only.
 
 **CRITICAL: Scope facts correctly.**
-- User preferences, profile facts, long-lived reminders, and anything you may need in a different Thenvoi room must be stored in \`/workspace/global\`.
+- User preferences, profile facts, long-lived reminders, and anything you may need in a different Thenvoi room belong in \`/workspace/global\`.
 - Room-specific notes, drafts, and temporary work for only this chat stay in \`/workspace/group\`.
 - Do NOT store cross-room user facts in \`/workspace/group\`.
+- If this room is non-main, do NOT claim you have persisted anything outside of the context of this room.
 
 ## Mention Format
 
