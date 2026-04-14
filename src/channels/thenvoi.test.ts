@@ -41,12 +41,17 @@ const mockRuntime = {
   stop: vi.fn().mockResolvedValue(true),
 };
 
+let createdChatCount = 0;
+
 const mockLink = {
   isConnected: vi.fn().mockReturnValue(true),
   subscribeRoom: vi.fn().mockResolvedValue(undefined),
   rest: {
     createChatMessage: vi.fn().mockResolvedValue({}),
-    createChat: vi.fn().mockResolvedValue({ id: 'hub-room-1' }),
+    createChat: vi.fn().mockImplementation(async () => {
+      createdChatCount += 1;
+      return { id: createdChatCount === 1 ? 'main-room-1' : 'hub-room-1' };
+    }),
     addChatParticipant: vi.fn().mockResolvedValue({}),
     createChatEvent: vi.fn().mockResolvedValue({}),
     listChats: vi.fn().mockResolvedValue({ data: [], pagination: null }),
@@ -147,6 +152,7 @@ describe('Thenvoi Channel', () => {
 
   beforeEach(() => {
     vi.clearAllMocks();
+    createdChatCount = 0;
     onExecuteCallback = null;
     onSessionCleanupCallback = null;
     onContactEventCallback = null;
@@ -838,27 +844,52 @@ describe('Thenvoi Channel', () => {
         registerGroup: registerGroupFn,
         deregisterGroup: deregisterGroupFn,
       });
-      return { ch: ch!, registerGroupFn, deregisterGroupFn };
+      return {
+        ch: ch!,
+        registerGroupFn,
+        deregisterGroupFn,
+        getGroups: () => groups,
+      };
     }
 
-    it('registers non-main room on room joined when owner is absent', async () => {
-      mockLink.rest.listChatParticipants.mockResolvedValue([
-        {
-          id: 'agent-123',
-          name: 'Andy',
-          type: 'Agent',
-          status: 'active',
-        },
-        {
-          id: 'user-2',
-          name: 'Guest',
-          type: 'User',
-          status: 'active',
-        },
-      ]);
-      const { ch, registerGroupFn } = createChannelWithRegister();
-      registeredGroups.mockReturnValue({});
+    it('creates and registers a stable main control room on connect', async () => {
+      const { ch, registerGroupFn, getGroups } = createChannelWithRegister();
       await ch.connect();
+
+      expect(mockLink.rest.createChat).toHaveBeenCalledTimes(1);
+      expect(mockLink.rest.addChatParticipant).toHaveBeenCalledWith(
+        'main-room-1',
+        {
+          participantId: 'owner-from-sdk',
+          role: 'member',
+        },
+      );
+      expect(setRouterState).toHaveBeenCalledWith(
+        'thenvoi_main_room_id',
+        'main-room-1',
+      );
+      expect(registerGroupFn).toHaveBeenCalledWith(
+        'thenvoi:main-room-1',
+        expect.objectContaining({
+          name: 'Main Control Room',
+          folder: 'thenvoi_main_room',
+          isMain: true,
+          requiresTrigger: false,
+        }),
+      );
+      expect(getGroups()['thenvoi:main-room-1']).toEqual(
+        expect.objectContaining({
+          folder: 'thenvoi_main_room',
+          isMain: true,
+        }),
+      );
+    });
+
+    it('registers ordinary rooms as non-main without participant lookups', async () => {
+      const { ch, registerGroupFn } = createChannelWithRegister();
+      await ch.connect();
+      registerGroupFn.mockClear();
+      mockLink.rest.listChatParticipants.mockClear();
 
       await onRoomJoinedCallback!('room-new', { title: 'New Room' });
 
@@ -871,128 +902,54 @@ describe('Thenvoi Channel', () => {
           isMain: undefined,
         }),
       );
+      expect(mockLink.rest.listChatParticipants).not.toHaveBeenCalled();
     });
 
-    it('marks owner one-to-one room as main', async () => {
-      mockLink.rest.listChatParticipants.mockResolvedValue([
-        {
-          id: 'owner-from-sdk',
-          name: 'Owner',
-          type: 'User',
-          status: 'active',
-          role: 'owner',
-        },
-        {
-          id: 'agent-123',
-          name: 'Andy',
-          type: 'Agent',
-          status: 'active',
-        },
-      ]);
+    it('keeps a one-to-one room non-main and does not clear session on membership churn', async () => {
       const { ch, registerGroupFn } = createChannelWithRegister();
       await ch.connect();
+      registerGroupFn.mockClear();
+      vi.mocked(deleteSession).mockClear();
 
-      await onRoomJoinedCallback!('room-main', { title: 'Control Room' });
+      await onRoomJoinedCallback!('room-1', { title: 'Private Room' });
+      await onParticipantAddedCallback!('room-1', {
+        id: 'owner-from-sdk',
+        name: 'Owner',
+        type: 'User',
+      });
+      await onParticipantRemovedCallback!('room-1', 'owner-from-sdk');
 
+      expect(registerGroupFn).toHaveBeenCalledTimes(1);
       expect(registerGroupFn).toHaveBeenCalledWith(
-        'thenvoi:room-main',
+        'thenvoi:room-1',
         expect.objectContaining({
-          name: 'Control Room',
-          isMain: true,
-        }),
-      );
-    });
-
-    it('downgrades room when any extra participant joins', async () => {
-      mockLink.rest.listChatParticipants.mockResolvedValue([
-        {
-          id: 'owner-from-sdk',
-          name: 'Owner',
-          type: 'User',
-          status: 'active',
-          role: 'owner',
-        },
-        {
-          id: 'agent-123',
-          name: 'Andy',
-          type: 'Agent',
-          status: 'active',
-        },
-        {
-          id: 'agent-other',
-          name: 'Other Agent',
-          type: 'Agent',
-          status: 'active',
-        },
-      ]);
-      const { ch, registerGroupFn } = createChannelWithRegister();
-      await ch.connect();
-
-      await onRoomJoinedCallback!('room-shared', { title: 'Shared Room' });
-
-      expect(registerGroupFn).toHaveBeenCalledWith(
-        'thenvoi:room-shared',
-        expect.objectContaining({
-          name: 'Shared Room',
+          name: 'Private Room',
           isMain: undefined,
         }),
       );
+      expect(deleteSession).not.toHaveBeenCalled();
     });
 
-    it('clears persisted session when room privilege changes', async () => {
-      mockLink.rest.listChats.mockResolvedValue({
-        data: [{ id: 'room-1', title: 'Test Room' }],
-        pagination: null,
-      });
-      mockLink.rest.listChatParticipants.mockResolvedValueOnce([
-        {
-          id: 'owner-from-sdk',
-          name: 'Owner',
-          type: 'User',
-          status: 'active',
-          role: 'owner',
-        },
-        {
-          id: 'user-2',
-          name: 'Guest',
-          type: 'User',
-          status: 'active',
-        },
-        {
-          id: 'agent-123',
-          name: 'Andy',
-          type: 'Agent',
-          status: 'active',
-        },
-      ]);
-      const { ch, registerGroupFn } = createChannelWithRegister();
+    it('removes stale persisted main-room registrations that are not the active control room', async () => {
+      const { ch, registerGroupFn, deregisterGroupFn } =
+        createChannelWithRegister({
+          'thenvoi:stale-main': {
+            name: 'Old Main Room',
+            folder: 'thenvoi_main_room',
+            trigger: '@Andy',
+            added_at: '2026-03-14T00:00:00Z',
+            requiresTrigger: false,
+            isMain: true,
+          },
+        });
       await ch.connect();
 
-      registerGroupFn.mockClear();
-      vi.mocked(deleteSession).mockClear();
-      mockLink.rest.listChatParticipants.mockResolvedValue([
-        {
-          id: 'owner-from-sdk',
-          name: 'Owner',
-          type: 'User',
-          status: 'active',
-          role: 'owner',
-        },
-        {
-          id: 'agent-123',
-          name: 'Andy',
-          type: 'Agent',
-          status: 'active',
-        },
-      ]);
-
-      await onRoomJoinedCallback!('room-1', { title: 'Test Room' });
-
-      expect(registerGroupFn).toHaveBeenCalledWith(
-        'thenvoi:room-1',
-        expect.objectContaining({ isMain: true }),
+      expect(deleteSession).toHaveBeenCalledWith('thenvoi_main_room');
+      expect(deregisterGroupFn).toHaveBeenCalledWith('thenvoi:stale-main');
+      expect(registerGroupFn).not.toHaveBeenCalledWith(
+        'thenvoi:stale-main',
+        expect.anything(),
       );
-      expect(deleteSession).toHaveBeenCalledWith('thenvoi_room1');
     });
 
     it('deregisters group on room left', async () => {
