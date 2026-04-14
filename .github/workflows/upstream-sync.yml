@@ -1,0 +1,451 @@
+name: Sync upstream NanoClaw
+
+on:
+  workflow_dispatch:
+    inputs:
+      upstream_ref:
+        description: Upstream branch to merge
+        required: false
+        type: string
+        default: main
+      dry_run:
+        description: Run merge and validation without pushing main
+        required: false
+        type: boolean
+        default: true
+  schedule:
+    - cron: '17 6 * * *'
+
+concurrency:
+  group: upstream-sync-main
+  cancel-in-progress: false
+
+permissions:
+  contents: write
+  pull-requests: write
+  issues: write
+
+jobs:
+  sync-upstream:
+    if: github.repository == 'thenvoi/nanoclaw-thenvoi'
+    runs-on: ubuntu-latest
+    env:
+      RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+      UPSTREAM_REPO: qwibitai/nanoclaw
+      UPSTREAM_REF_INPUT: ${{ github.event.inputs.upstream_ref }}
+      DRY_RUN_INPUT: ${{ github.event.inputs.dry_run }}
+      APP_ID: ${{ secrets.APP_ID }}
+      APP_PRIVATE_KEY: ${{ secrets.APP_PRIVATE_KEY }}
+    steps:
+      - name: Create GitHub App token
+        id: app-token
+        if: ${{ env.APP_ID != '' && env.APP_PRIVATE_KEY != '' }}
+        uses: actions/create-github-app-token@v3
+        with:
+          app-id: ${{ env.APP_ID }}
+          private-key: ${{ env.APP_PRIVATE_KEY }}
+          owner: ${{ github.repository_owner }}
+          permission-contents: write
+          permission-pull-requests: write
+          permission-issues: write
+          permission-workflows: write
+
+      - name: Resolve automation token
+        id: auth
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          if [ -n "${APP_TOKEN}" ]; then
+            echo "token=${APP_TOKEN}" >> "$GITHUB_OUTPUT"
+            echo "kind=github-app" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+
+          echo "token=${GITHUB_TOKEN}" >> "$GITHUB_OUTPUT"
+          echo "kind=github-token" >> "$GITHUB_OUTPUT"
+        env:
+          APP_TOKEN: ${{ steps.app-token.outputs.token }}
+          GITHUB_TOKEN: ${{ github.token }}
+
+      - name: Check out repository
+        uses: actions/checkout@v6
+        with:
+          fetch-depth: 0
+          token: ${{ steps.auth.outputs.token }}
+
+      - name: Configure git identity
+        shell: bash
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+
+      - name: Merge upstream into sync branch
+        id: merge
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          UPSTREAM_REF="${UPSTREAM_REF_INPUT:-main}"
+          DRY_RUN="${DRY_RUN_INPUT:-false}"
+          WORK_BRANCH="automation/upstream-sync-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}"
+          UPSTREAM_URL="https://github.com/${UPSTREAM_REPO}.git"
+
+          git remote add upstream "$UPSTREAM_URL" 2>/dev/null || git remote set-url upstream "$UPSTREAM_URL"
+          git fetch upstream "$UPSTREAM_REF" --tags
+
+          UPSTREAM_SHA="$(git rev-parse "upstream/${UPSTREAM_REF}")"
+          CURRENT_SHA="$(git rev-parse HEAD)"
+
+          {
+            echo "dry_run=${DRY_RUN}"
+            echo "upstream_ref=${UPSTREAM_REF}"
+            echo "upstream_sha=${UPSTREAM_SHA}"
+            echo "current_sha=${CURRENT_SHA}"
+            echo "work_branch=${WORK_BRANCH}"
+          } >> "$GITHUB_OUTPUT"
+
+          if git merge-base --is-ancestor "$UPSTREAM_SHA" "$CURRENT_SHA"; then
+            echo "result=up-to-date" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+
+          git checkout -b "$WORK_BRANCH"
+
+          if git merge --no-ff --no-commit "upstream/${UPSTREAM_REF}"; then
+            rm -f .github/workflows/bump-version.yml .github/workflows/update-tokens.yml
+            git add -A
+            git commit --no-edit
+            echo "result=merged" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+
+          CONFLICT_FILES="$(git diff --name-only --diff-filter=U || true)"
+          {
+            echo "result=conflict"
+            echo "conflict_files<<EOF"
+            printf '%s\n' "$CONFLICT_FILES"
+            echo "EOF"
+          } >> "$GITHUB_OUTPUT"
+
+          git add -A
+          git commit -m "chore: snapshot upstream merge conflict from ${UPSTREAM_REPO}@${UPSTREAM_REF}"
+
+      - name: Set up Node.js
+        if: ${{ steps.merge.outputs.result == 'merged' }}
+        uses: actions/setup-node@v6
+        with:
+          node-version: 20
+          cache: npm
+
+      - name: Install dependencies
+        id: install
+        if: ${{ steps.merge.outputs.result == 'merged' }}
+        shell: bash
+        run: |
+          set +e
+
+          : > validation.log
+          echo "$ npm ci" | tee -a validation.log
+          npm ci 2>&1 | tee -a validation.log
+          status=${PIPESTATUS[0]}
+          echo >> validation.log
+
+          if [ "$status" -ne 0 ]; then
+            echo "result=failed" >> "$GITHUB_OUTPUT"
+            exit "$status"
+          fi
+
+          echo "result=passed" >> "$GITHUB_OUTPUT"
+
+      - name: Validate merged tree
+        id: validate
+        if: ${{ steps.merge.outputs.result == 'merged' && steps.install.outputs.result == 'passed' }}
+        shell: bash
+        run: |
+          set +e
+
+          status=0
+
+          for cmd in \
+            "npm run build" \
+            "npm run format:check" \
+            "npm run typecheck" \
+            "npm test"
+          do
+            echo "\$ ${cmd}" | tee -a validation.log
+            eval "$cmd" 2>&1 | tee -a validation.log
+            cmd_status=${PIPESTATUS[0]}
+            echo >> validation.log
+
+            if [ "$cmd_status" -ne 0 ]; then
+              status=$cmd_status
+              break
+            fi
+          done
+
+          echo "log_path=validation.log" >> "$GITHUB_OUTPUT"
+
+          if [ "$status" -ne 0 ]; then
+            echo "result=failed" >> "$GITHUB_OUTPUT"
+            exit "$status"
+          fi
+
+          echo "result=passed" >> "$GITHUB_OUTPUT"
+
+      - name: Upload validation log
+        if: ${{ always() && steps.merge.outputs.result == 'merged' }}
+        uses: actions/upload-artifact@v4
+        with:
+          name: upstream-sync-validation-${{ github.run_id }}-${{ github.run_attempt }}
+          path: validation.log
+          if-no-files-found: ignore
+
+      - name: Push merged main
+        id: push-main
+        if: ${{ steps.merge.outputs.result == 'merged' && steps.validate.outputs.result == 'passed' && steps.merge.outputs.dry_run != 'true' }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          git push origin HEAD:main
+
+      - name: Tag successful sync
+        id: tag_successful_sync
+        if: ${{ steps.push-main.outcome == 'success' }}
+        continue-on-error: true
+        shell: bash
+        env:
+          UPSTREAM_REF: ${{ steps.merge.outputs.upstream_ref }}
+          UPSTREAM_SHA: ${{ steps.merge.outputs.upstream_sha }}
+        run: |
+          set -euo pipefail
+
+          SYNC_TAG="upstream-sync-$(date -u +%Y%m%d-%H%M%S)-${UPSTREAM_SHA:0:7}"
+          git tag -a "$SYNC_TAG" -m "Sync ${UPSTREAM_REPO}@${UPSTREAM_REF} at ${UPSTREAM_SHA}"
+          git push origin "$SYNC_TAG"
+          echo "tag=${SYNC_TAG}" >> "$GITHUB_OUTPUT"
+
+      - name: Classify sync outcome
+        id: outcome
+        if: ${{ always() }}
+        shell: bash
+        env:
+          MERGE_RESULT: ${{ steps.merge.outputs.result }}
+          INSTALL_RESULT: ${{ steps.install.outputs.result }}
+          VALIDATE_RESULT: ${{ steps.validate.outputs.result }}
+          PUSH_MAIN_OUTCOME: ${{ steps.push-main.outcome }}
+          DRY_RUN: ${{ steps.merge.outputs.dry_run }}
+        run: |
+          set -euo pipefail
+
+          if [ "$MERGE_RESULT" = "up-to-date" ]; then
+            echo "action=none" >> "$GITHUB_OUTPUT"
+            echo "reason=up-to-date" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+
+          if [ "$MERGE_RESULT" = "conflict" ]; then
+            echo "action=create-pr" >> "$GITHUB_OUTPUT"
+            echo "reason=merge-conflict" >> "$GITHUB_OUTPUT"
+            echo "label=upstream-conflict" >> "$GITHUB_OUTPUT"
+            echo "title=chore: resolve upstream sync conflict from ${UPSTREAM_REPO}" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+
+          if [ "$MERGE_RESULT" = "merged" ] && [ "$INSTALL_RESULT" = "failed" ]; then
+            echo "action=create-pr" >> "$GITHUB_OUTPUT"
+            echo "reason=install-failed" >> "$GITHUB_OUTPUT"
+            echo "label=upstream-regression" >> "$GITHUB_OUTPUT"
+            echo "title=chore: investigate upstream sync install failure from ${UPSTREAM_REPO}" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+
+          if [ "$MERGE_RESULT" = "merged" ] && [ "$VALIDATE_RESULT" = "failed" ]; then
+            echo "action=create-pr" >> "$GITHUB_OUTPUT"
+            echo "reason=validation-failed" >> "$GITHUB_OUTPUT"
+            echo "label=upstream-regression" >> "$GITHUB_OUTPUT"
+            echo "title=chore: investigate upstream sync regression from ${UPSTREAM_REPO}" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+
+          if [ "$MERGE_RESULT" = "merged" ] && [ "$VALIDATE_RESULT" = "passed" ] && [ "$DRY_RUN" = "true" ]; then
+            echo "action=none" >> "$GITHUB_OUTPUT"
+            echo "reason=dry-run" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+
+          if [ "$MERGE_RESULT" = "merged" ] && [ "$VALIDATE_RESULT" = "passed" ] && [ "$PUSH_MAIN_OUTCOME" = "failure" ]; then
+            echo "action=create-pr" >> "$GITHUB_OUTPUT"
+            echo "reason=push-failed" >> "$GITHUB_OUTPUT"
+            echo "label=upstream-sync-manual" >> "$GITHUB_OUTPUT"
+            echo "title=chore: complete upstream sync from ${UPSTREAM_REPO}" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+
+          echo "action=none" >> "$GITHUB_OUTPUT"
+          echo "reason=success" >> "$GITHUB_OUTPUT"
+
+      - name: Push manual resolution branch
+        if: ${{ always() && steps.outcome.outputs.action == 'create-pr' }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          git push --set-upstream origin HEAD:${{ steps.merge.outputs.work_branch }}
+
+      - name: Ensure sync labels exist
+        if: ${{ always() && steps.outcome.outputs.action == 'create-pr' }}
+        shell: bash
+        env:
+          GH_TOKEN: ${{ steps.auth.outputs.token }}
+        run: |
+          set -euo pipefail
+          gh label create upstream-conflict --color D73A4A --description "Upstream merge needs manual conflict resolution" --force
+          gh label create upstream-regression --color FBCA04 --description "Upstream merge passed git merge but failed validation" --force
+          gh label create upstream-sync-manual --color 5319E7 --description "Upstream sync branch needs manual follow-up" --force
+
+      - name: Build pull request body
+        if: ${{ always() && steps.outcome.outputs.action == 'create-pr' }}
+        shell: bash
+        env:
+          REASON: ${{ steps.outcome.outputs.reason }}
+          WORK_BRANCH: ${{ steps.merge.outputs.work_branch }}
+          UPSTREAM_REF: ${{ steps.merge.outputs.upstream_ref }}
+          UPSTREAM_SHA: ${{ steps.merge.outputs.upstream_sha }}
+          CONFLICT_FILES: ${{ steps.merge.outputs.conflict_files }}
+        run: |
+          set -euo pipefail
+
+          {
+            echo "## Summary"
+            echo
+            echo "Automated upstream sync needs manual follow-up."
+            echo
+            echo "- Reason: \`${REASON}\`"
+            echo "- Upstream commit: [\`${UPSTREAM_SHA:0:7}\`](https://github.com/${UPSTREAM_REPO}/commit/${UPSTREAM_SHA})"
+            echo "- Workflow run: ${RUN_URL}"
+            echo "- Sync branch: \`${WORK_BRANCH}\`"
+            echo
+            echo "## Follow-up"
+            echo
+            echo "- Review the merge result and finish any required conflict resolution."
+            echo "- Keep \`.github/workflows/bump-version.yml\` and \`.github/workflows/update-tokens.yml\` removed after the sync."
+            echo "- Re-run \`npm run build\`, \`npm run format:check\`, \`npm run typecheck\`, and \`npm test\` before merging."
+            echo
+            echo "cc @thenvoi/integrations-team"
+          } > upstream-sync-pr.md
+
+          if [ -n "$CONFLICT_FILES" ]; then
+            {
+              echo
+              echo "## Conflicting files"
+              echo
+              while IFS= read -r file; do
+                [ -n "$file" ] && echo "- \`$file\`"
+              done <<< "$CONFLICT_FILES"
+            } >> upstream-sync-pr.md
+          fi
+
+          if [ -f validation.log ]; then
+            {
+              echo
+              echo "## Validation log tail"
+              echo
+              echo '```text'
+              tail -n 120 validation.log
+              echo '```'
+            } >> upstream-sync-pr.md
+          fi
+
+      - name: Open pull request
+        id: pr
+        if: ${{ always() && steps.outcome.outputs.action == 'create-pr' }}
+        continue-on-error: true
+        shell: bash
+        env:
+          GH_TOKEN: ${{ steps.auth.outputs.token }}
+          PR_LABEL: ${{ steps.outcome.outputs.label }}
+          PR_TITLE: ${{ steps.outcome.outputs.title }}
+          WORK_BRANCH: ${{ steps.merge.outputs.work_branch }}
+        run: |
+          set -euo pipefail
+          pr_url="$(gh pr create --base main --head "$WORK_BRANCH" --title "$PR_TITLE" --body-file upstream-sync-pr.md --label "$PR_LABEL")"
+          echo "url=${pr_url}" >> "$GITHUB_OUTPUT"
+
+      - name: Open fallback issue if PR creation fails
+        id: fallback-issue
+        if: ${{ always() && steps.outcome.outputs.action == 'create-pr' && steps.pr.outcome == 'failure' }}
+        shell: bash
+        env:
+          GH_TOKEN: ${{ steps.auth.outputs.token }}
+          ISSUE_LABEL: ${{ steps.outcome.outputs.label }}
+          ISSUE_TITLE: ${{ steps.outcome.outputs.title }}
+          WORK_BRANCH: ${{ steps.merge.outputs.work_branch }}
+        run: |
+          set -euo pipefail
+          issue_url="$(gh issue create --title "$ISSUE_TITLE" --body-file upstream-sync-pr.md --label "$ISSUE_LABEL")"
+          echo "url=${issue_url}" >> "$GITHUB_OUTPUT"
+
+      - name: Write job summary
+        if: ${{ always() }}
+        shell: bash
+        env:
+          TOKEN_KIND: ${{ steps.auth.outputs.kind }}
+          MERGE_RESULT: ${{ steps.merge.outputs.result }}
+          UPSTREAM_REF: ${{ steps.merge.outputs.upstream_ref }}
+          UPSTREAM_SHA: ${{ steps.merge.outputs.upstream_sha }}
+          DRY_RUN: ${{ steps.merge.outputs.dry_run }}
+          VALIDATE_RESULT: ${{ steps.validate.outputs.result }}
+          PUSH_MAIN_OUTCOME: ${{ steps.push-main.outcome }}
+          OUTCOME_REASON: ${{ steps.outcome.outputs.reason }}
+          WORK_BRANCH: ${{ steps.merge.outputs.work_branch }}
+          PR_URL: ${{ steps.pr.outputs.url }}
+          ISSUE_URL: ${{ steps.fallback-issue.outputs.url }}
+          SYNC_TAG: ${{ steps.tag_successful_sync.outputs.tag }}
+        run: |
+          set -euo pipefail
+
+          {
+            echo "## Upstream sync"
+            echo
+            echo "- Token: \`${TOKEN_KIND}\`"
+            echo "- Upstream: \`${UPSTREAM_REPO}@${UPSTREAM_REF:-main}\`"
+            echo "- Upstream commit: \`${UPSTREAM_SHA:-unknown}\`"
+            echo "- Merge result: \`${MERGE_RESULT:-not-run}\`"
+            echo "- Validation: \`${VALIDATE_RESULT:-not-run}\`"
+            echo "- Push main: \`${PUSH_MAIN_OUTCOME:-not-run}\`"
+            echo "- Outcome: \`${OUTCOME_REASON:-unknown}\`"
+            echo "- Workflow run: ${RUN_URL}"
+          } >> "$GITHUB_STEP_SUMMARY"
+
+          if [ "$OUTCOME_REASON" = "dry-run" ]; then
+            {
+              echo
+              echo "Dry run completed successfully. Main was not updated."
+            } >> "$GITHUB_STEP_SUMMARY"
+          fi
+
+          if [ -n "$SYNC_TAG" ]; then
+            {
+              echo
+              echo "- Tag: \`${SYNC_TAG}\`"
+            } >> "$GITHUB_STEP_SUMMARY"
+          fi
+
+          if [ -n "$WORK_BRANCH" ] && [ "$OUTCOME_REASON" != "success" ] && [ "$OUTCOME_REASON" != "up-to-date" ] && [ "$OUTCOME_REASON" != "dry-run" ]; then
+            {
+              echo
+              echo "- Manual branch: \`${WORK_BRANCH}\`"
+            } >> "$GITHUB_STEP_SUMMARY"
+          fi
+
+          if [ -n "$PR_URL" ]; then
+            {
+              echo
+              echo "- Pull request: ${PR_URL}"
+            } >> "$GITHUB_STEP_SUMMARY"
+          elif [ -n "$ISSUE_URL" ]; then
+            {
+              echo
+              echo "- Fallback issue: ${ISSUE_URL}"
+            } >> "$GITHUB_STEP_SUMMARY"
+          fi
