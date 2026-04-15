@@ -1,0 +1,108 @@
+services:
+  postgres:
+    image: postgres:18-alpine
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: ${COMPOSE_POSTGRES_USER:-onecli}
+      POSTGRES_PASSWORD: ${COMPOSE_POSTGRES_PASSWORD:-onecli}
+      POSTGRES_DB: ${COMPOSE_POSTGRES_DB:-onecli}
+    volumes:
+      - onecli-pgdata:/var/lib/postgresql/data
+    healthcheck:
+      test:
+        [
+          'CMD-SHELL',
+          'pg_isready -U ${COMPOSE_POSTGRES_USER:-onecli} -d ${COMPOSE_POSTGRES_DB:-onecli}',
+        ]
+      interval: 5s
+      timeout: 3s
+      start_period: 15s
+      retries: 10
+
+  onecli:
+    image: ghcr.io/onecli/onecli:latest
+    pull_policy: always
+    depends_on:
+      postgres:
+        condition: service_healthy
+    restart: unless-stopped
+    environment:
+      DATABASE_URL: postgresql://${COMPOSE_POSTGRES_USER:-onecli}:${COMPOSE_POSTGRES_PASSWORD:-onecli}@postgres:5432/${COMPOSE_POSTGRES_DB:-onecli}
+      NEXT_PUBLIC_APP_URL: http://localhost:${COMPOSE_ONECLI_DASHBOARD_PORT:-10254}
+      APP_URL: http://localhost:${COMPOSE_ONECLI_DASHBOARD_PORT:-10254}
+    ports:
+      - 127.0.0.1:${COMPOSE_ONECLI_DASHBOARD_PORT:-10254}:10254
+      - 127.0.0.1:${COMPOSE_ONECLI_GATEWAY_PORT:-10255}:10255
+    volumes:
+      - onecli-data:/app/data
+
+  agent-build:
+    image: ${COMPOSE_CONTAINER_IMAGE:-nanoclaw-agent:latest}
+    build:
+      context: ./container
+      dockerfile: Dockerfile
+    entrypoint: ['sh', '-lc', 'echo agent image built']
+    restart: 'no'
+
+  nanoclaw:
+    image: nanoclaw-host:latest
+    build:
+      context: .
+      dockerfile: Dockerfile.host
+      args:
+        NANOCLAW_BUILD_HASH: ${NANOCLAW_BUILD_HASH:-dev}
+    depends_on:
+      postgres:
+        condition: service_healthy
+      onecli:
+        condition: service_started
+      agent-build:
+        condition: service_completed_successfully
+    restart: unless-stopped
+    user: '0:0'
+    group_add:
+      - '${DOCKER_GID:?set DOCKER_GID to the docker.sock group id}'
+    working_dir: /app
+    environment:
+      HOME: /home/node
+      ONECLI_URL: http://onecli:10254
+      CONTAINER_IMAGE: ${COMPOSE_CONTAINER_IMAGE:-nanoclaw-agent:latest}
+      NANOCLAW_HOST_PATH: ${NANOCLAW_HOST_PATH:?set NANOCLAW_HOST_PATH to the absolute host repo path}
+      NANOCLAW_DOCKER_NETWORK: ${NANOCLAW_DOCKER_NETWORK:-nanoclaw-compose}
+      NANOCLAW_ONECLI_HOSTNAME: onecli
+      NANOCLAW_BUILD_HASH: ${NANOCLAW_BUILD_HASH:-dev}
+      TMPDIR: ${NANOCLAW_SHARED_TMP:-/tmp/nanoclaw-shared}
+    volumes:
+      - type: bind
+        source: ${NANOCLAW_HOST_PATH:?set NANOCLAW_HOST_PATH to the absolute host repo path}/store
+        target: /app/store
+      - type: bind
+        source: ${NANOCLAW_HOST_PATH:?set NANOCLAW_HOST_PATH to the absolute host repo path}/groups
+        target: /app/groups
+      - type: bind
+        source: ${NANOCLAW_HOST_PATH:?set NANOCLAW_HOST_PATH to the absolute host repo path}/data
+        target: /app/data
+      - type: bind
+        source: ${NANOCLAW_HOST_PATH:?set NANOCLAW_HOST_PATH to the absolute host repo path}/logs
+        target: /app/logs
+      - type: bind
+        source: ${NANOCLAW_HOST_PATH:?set NANOCLAW_HOST_PATH to the absolute host repo path}/.env
+        target: /app/.env
+        read_only: true
+      - type: bind
+        source: ${NANOCLAW_CONFIG_DIR:?set NANOCLAW_CONFIG_DIR to the host nanoclaw config directory}
+        target: /home/node/.config/nanoclaw
+      - type: bind
+        source: ${NANOCLAW_SHARED_TMP:-/tmp/nanoclaw-shared}
+        target: ${NANOCLAW_SHARED_TMP:-/tmp/nanoclaw-shared}
+      - type: bind
+        source: /var/run/docker.sock
+        target: /var/run/docker.sock
+
+volumes:
+  onecli-pgdata:
+  onecli-data:
+
+networks:
+  default:
+    name: ${NANOCLAW_DOCKER_NETWORK:-nanoclaw-compose}

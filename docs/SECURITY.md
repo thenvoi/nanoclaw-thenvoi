@@ -83,6 +83,10 @@ Each NanoClaw group gets its own OneCLI agent identity. This allows different cr
 - Any credentials matching blocked patterns
 - `.env` is shadowed with `/dev/null` in the project root mount
 
+### Compose deployment note
+
+The optional Compose deployment for the outer NanoClaw process does not change this runtime model. NanoClaw still launches agent runs as sibling `docker run` containers, which means the `nanoclaw` service mounts the Docker socket and joins the sibling containers to the Compose network. That is a deliberate operator tradeoff, not a new sandbox boundary. The security properties above still come from the per-agent container mounts, host-path remapping, and credential injection path, not from the Compose service itself.
+
 ## Privilege Comparison
 
 | Capability | Main Group | Non-Main Group |

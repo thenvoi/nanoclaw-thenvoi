@@ -60,6 +60,43 @@ interface VolumeMount {
   readonly: boolean;
 }
 
+const NANOCLAW_HOST_PATH = process.env.NANOCLAW_HOST_PATH || '';
+const NANOCLAW_DOCKER_NETWORK = process.env.NANOCLAW_DOCKER_NETWORK || '';
+const NANOCLAW_ONECLI_HOSTNAME =
+  process.env.NANOCLAW_ONECLI_HOSTNAME || 'onecli';
+const NANOCLAW_BUILD_HASH = process.env.NANOCLAW_BUILD_HASH || '';
+
+function toHostPath(internalPath: string): string {
+  if (internalPath === '/dev/null' || !NANOCLAW_HOST_PATH) {
+    return internalPath;
+  }
+
+  const projectRoot = process.cwd();
+  const normalizedProjectRoot = path.resolve(projectRoot);
+  const normalizedInternalPath = path.resolve(internalPath);
+
+  if (
+    normalizedInternalPath === normalizedProjectRoot ||
+    normalizedInternalPath.startsWith(`${normalizedProjectRoot}${path.sep}`)
+  ) {
+    const relativePath = path.relative(
+      normalizedProjectRoot,
+      normalizedInternalPath,
+    );
+    return path.join(NANOCLAW_HOST_PATH, relativePath);
+  }
+
+  return internalPath;
+}
+
+function rewriteProxyHost(value: string): string {
+  if (!NANOCLAW_DOCKER_NETWORK) {
+    return value;
+  }
+
+  return value.replace(/host\.docker\.internal/g, NANOCLAW_ONECLI_HOSTNAME);
+}
+
 function buildVolumeMounts(
   group: RegisteredGroup,
   isMain: boolean,
@@ -75,7 +112,7 @@ function buildVolumeMounts(
     // (src/, dist/, package.json, etc.) which would bypass the sandbox
     // entirely on next restart.
     mounts.push({
-      hostPath: projectRoot,
+      hostPath: toHostPath(projectRoot),
       containerPath: '/workspace/project',
       readonly: true,
     });
@@ -85,7 +122,7 @@ function buildVolumeMounts(
     const envFile = path.join(projectRoot, '.env');
     if (fs.existsSync(envFile)) {
       mounts.push({
-        hostPath: '/dev/null',
+        hostPath: toHostPath('/dev/null'),
         containerPath: '/workspace/project/.env',
         readonly: true,
       });
@@ -95,14 +132,14 @@ function buildVolumeMounts(
     // query and write to the database directly.
     const storeDir = path.join(projectRoot, 'store');
     mounts.push({
-      hostPath: storeDir,
+      hostPath: toHostPath(storeDir),
       containerPath: '/workspace/project/store',
       readonly: false,
     });
 
     // Main also gets its group folder as the working directory
     mounts.push({
-      hostPath: groupDir,
+      hostPath: toHostPath(groupDir),
       containerPath: '/workspace/group',
       readonly: false,
     });
@@ -111,7 +148,7 @@ function buildVolumeMounts(
     const globalDir = path.join(GROUPS_DIR, 'global');
     if (fs.existsSync(globalDir)) {
       mounts.push({
-        hostPath: globalDir,
+        hostPath: toHostPath(globalDir),
         containerPath: '/workspace/global',
         readonly: false,
       });
@@ -119,7 +156,7 @@ function buildVolumeMounts(
   } else {
     // Other groups only get their own folder
     mounts.push({
-      hostPath: groupDir,
+      hostPath: toHostPath(groupDir),
       containerPath: '/workspace/group',
       readonly: false,
     });
@@ -129,7 +166,7 @@ function buildVolumeMounts(
     const globalDir = path.join(GROUPS_DIR, 'global');
     if (fs.existsSync(globalDir)) {
       mounts.push({
-        hostPath: globalDir,
+        hostPath: toHostPath(globalDir),
         containerPath: '/workspace/global',
         readonly: true,
       });
@@ -181,7 +218,7 @@ function buildVolumeMounts(
     }
   }
   mounts.push({
-    hostPath: groupSessionsDir,
+    hostPath: toHostPath(groupSessionsDir),
     containerPath: '/home/node/.claude',
     readonly: false,
   });
@@ -193,7 +230,7 @@ function buildVolumeMounts(
   fs.mkdirSync(path.join(groupIpcDir, 'tasks'), { recursive: true });
   fs.mkdirSync(path.join(groupIpcDir, 'input'), { recursive: true });
   mounts.push({
-    hostPath: groupIpcDir,
+    hostPath: toHostPath(groupIpcDir),
     containerPath: '/workspace/ipc',
     readonly: false,
   });
@@ -216,17 +253,23 @@ function buildVolumeMounts(
   if (fs.existsSync(agentRunnerSrc)) {
     const srcIndex = path.join(agentRunnerSrc, 'index.ts');
     const cachedIndex = path.join(groupAgentRunnerDir, 'index.ts');
+    const buildHashPath = path.join(groupAgentRunnerDir, '.build-hash');
+    const cachedBuildHash = fs.existsSync(buildHashPath)
+      ? fs.readFileSync(buildHashPath, 'utf-8').trim()
+      : '';
     const needsCopy =
       !fs.existsSync(groupAgentRunnerDir) ||
       !fs.existsSync(cachedIndex) ||
+      cachedBuildHash !== NANOCLAW_BUILD_HASH ||
       (fs.existsSync(srcIndex) &&
         fs.statSync(srcIndex).mtimeMs > fs.statSync(cachedIndex).mtimeMs);
     if (needsCopy) {
       fs.cpSync(agentRunnerSrc, groupAgentRunnerDir, { recursive: true });
+      fs.writeFileSync(buildHashPath, `${NANOCLAW_BUILD_HASH}\n`);
     }
   }
   mounts.push({
-    hostPath: groupAgentRunnerDir,
+    hostPath: toHostPath(groupAgentRunnerDir),
     containerPath: '/app/src',
     readonly: false,
   });
@@ -237,7 +280,7 @@ function buildVolumeMounts(
       group.containerConfig.additionalMounts,
       group.name,
       isMain,
-    );
+    ).map((mount) => ({ ...mount, hostPath: toHostPath(mount.hostPath) }));
     mounts.push(...validatedMounts);
   }
 
@@ -250,7 +293,19 @@ async function buildContainerArgs(
   input: ContainerInput,
   agentIdentifier?: string,
 ): Promise<string[]> {
-  const args: string[] = ['run', '-i', '--rm', '--name', containerName];
+  const args: string[] = [
+    'run',
+    '-i',
+    '--rm',
+    '--name',
+    containerName,
+    '--label',
+    'nanoclaw.agent=true',
+  ];
+
+  if (NANOCLAW_DOCKER_NETWORK) {
+    args.push('--network', NANOCLAW_DOCKER_NETWORK);
+  }
 
   // Pass host timezone so container's local time matches the user's
   args.push('-e', `TZ=${TIMEZONE}`);
@@ -268,6 +323,24 @@ async function buildContainerArgs(
       { containerName },
       'OneCLI gateway not reachable — container will have no credentials',
     );
+  }
+
+  for (let i = 0; i < args.length - 1; i += 1) {
+    if (args[i] !== '-e') continue;
+    const [key, ...rest] = args[i + 1].split('=');
+    if (
+      key !== 'HTTP_PROXY' &&
+      key !== 'HTTPS_PROXY' &&
+      key !== 'ALL_PROXY' &&
+      key !== 'NO_PROXY' &&
+      key !== 'http_proxy' &&
+      key !== 'https_proxy' &&
+      key !== 'all_proxy' &&
+      key !== 'no_proxy'
+    ) {
+      continue;
+    }
+    args[i + 1] = `${key}=${rewriteProxyHost(rest.join('='))}`;
   }
 
   // Thenvoi platform: pass channel info and REST URL.
@@ -317,7 +390,9 @@ async function buildContainerArgs(
   }
 
   // Runtime-specific args for host gateway resolution
-  args.push(...hostGatewayArgs());
+  if (!NANOCLAW_DOCKER_NETWORK) {
+    args.push(...hostGatewayArgs());
+  }
 
   // Run as host user so bind-mounted files are accessible.
   // Skip when running as root (uid 0), as the container's node user (uid 1000),

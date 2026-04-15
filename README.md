@@ -43,6 +43,7 @@ claude
 
 Then run `/setup`. Claude Code handles everything: dependencies, authentication, container setup and service configuration.
 
+If you want a Docker-only deployment for the outer NanoClaw process too, there is now a separate Compose path in [docs/docker-compose-deployment.md](docs/docker-compose-deployment.md). That guide covers the full flow from repo clone and `.env` setup through Compose startup and post-start validation, using `docker-compose.yml`, `Dockerfile.host`, `.env.compose.template`, host-path remapping with `NANOCLAW_HOST_PATH`, and a one-shot `agent-build` service. The runtime model stays the same: NanoClaw runs as one long-lived service, OneCLI runs alongside it, and NanoClaw still launches ephemeral sibling agent containers with `docker run`.
 > **Note:** Commands prefixed with `/` (like `/setup`, `/add-whatsapp`) are [Claude Code skills](https://code.claude.com/docs/en/skills). Type them inside the `claude` CLI prompt, not in your regular terminal. If you don't have Claude Code installed, get it at [claude.com/product/claude-code](https://claude.com/product/claude-code).
 
 ## Philosophy
@@ -157,7 +158,7 @@ Docker provides cross-platform support (macOS, Linux and even Windows via WSL2) 
 
 **Can I run this on Linux or Windows?**
 
-Yes. Docker is the default runtime and works on macOS, Linux, and Windows (via WSL2). Just run `/setup`.
+Yes. Docker is the default runtime and works on macOS, Linux, and Windows (via WSL2). The normal path is still `/setup`. If you want NanoClaw itself managed by Docker too, use the Compose deployment in [docs/docker-compose-deployment.md](docs/docker-compose-deployment.md), which wires the host process, OneCLI, Postgres, and agent image build together without changing the sibling-container execution model.
 
 **Is this secure?**
 
