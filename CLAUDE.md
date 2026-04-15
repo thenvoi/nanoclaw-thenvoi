@@ -71,6 +71,8 @@ systemctl --user stop nanoclaw
 systemctl --user restart nanoclaw
 ```
 
+Docker Compose deployment is now a separate operator path. See `docs/docker-compose-deployment.md`. It uses `docker-compose.yml`, `Dockerfile.host`, `.env.compose.template`, host-path remapping via `NANOCLAW_HOST_PATH`, and a one-shot `agent-build` service. It keeps the current runtime model intact: the long-running NanoClaw process runs in Compose, but agent executions still happen as sibling `docker run` containers launched by `src/container-runner.ts`.
+
 ## Troubleshooting
 
 **WhatsApp not connecting after upgrade:** WhatsApp is now a separate skill, not bundled in core. Run `/add-whatsapp` (or `npx tsx scripts/apply-skill.ts .claude/skills/add-whatsapp && npm run build`) to install it. Existing auth credentials and groups are preserved.

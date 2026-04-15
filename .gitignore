@@ -23,6 +23,8 @@ groups/global/*
 .env
 .env.local
 .env.prod
+.env.compose
+.env.compose.local
 
 # Temp files
 .tmp-*

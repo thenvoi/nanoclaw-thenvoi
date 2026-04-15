@@ -7,6 +7,8 @@ import os from 'os';
 
 import { logger } from './logger.js';
 
+const AGENT_CONTAINER_LABEL = 'nanoclaw.agent=true';
+
 /** The container runtime binary name. */
 export const CONTAINER_RUNTIME_BIN = 'docker';
 
@@ -71,7 +73,13 @@ export function ensureContainerRuntimeRunning(): void {
       '║  2. Run: docker info                                           ║',
     );
     console.error(
-      '║  3. Restart NanoClaw                                           ║',
+      '║  3. If using docker compose, mount /var/run/docker.sock and    ║',
+    );
+    console.error(
+      '║     set NANOCLAW_HOST_PATH to the host repo checkout path      ║',
+    );
+    console.error(
+      '║  4. Restart NanoClaw                                           ║',
     );
     console.error(
       '╚════════════════════════════════════════════════════════════════╝\n',
@@ -82,11 +90,11 @@ export function ensureContainerRuntimeRunning(): void {
   }
 }
 
-/** Kill orphaned NanoClaw containers from previous runs. */
+/** Kill orphaned NanoClaw agent containers from previous runs. */
 export function cleanupOrphans(): void {
   try {
     const output = execSync(
-      `${CONTAINER_RUNTIME_BIN} ps --filter name=nanoclaw- --format '{{.Names}}'`,
+      `${CONTAINER_RUNTIME_BIN} ps --filter label=${AGENT_CONTAINER_LABEL} --format '{{.Names}}'`,
       { stdio: ['pipe', 'pipe', 'pipe'], encoding: 'utf-8' },
     );
     const orphans = output.trim().split('\n').filter(Boolean);

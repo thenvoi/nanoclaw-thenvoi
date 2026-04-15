@@ -1,0 +1,15 @@
+.git
+.github
+.claude
+.env
+.env.*
+node_modules
+logs
+store
+data
+groups/*/logs
+repo-tokens
+coverage
+dist
+container/node_modules
+container/agent-runner/node_modules

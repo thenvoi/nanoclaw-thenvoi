@@ -1,0 +1,31 @@
+FROM node:22-bookworm-slim
+
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    ca-certificates \
+    curl \
+    docker.io \
+    git \
+    g++ \
+    make \
+    python3 \
+    && rm -rf /var/lib/apt/lists/*
+
+WORKDIR /app
+
+COPY package*.json ./
+RUN npm ci
+
+COPY . ./
+
+ARG NANOCLAW_BUILD_HASH=dev
+ENV NANOCLAW_BUILD_HASH=${NANOCLAW_BUILD_HASH}
+ENV TMPDIR=/tmp/nanoclaw-shared
+
+RUN printf '%s\n' "$NANOCLAW_BUILD_HASH" > /app/.nanoclaw-build-hash \
+    && npm run build \
+    && mkdir -p /tmp/nanoclaw-shared /app/store /app/groups /app/data /app/logs \
+    && chown -R node:node /app /tmp/nanoclaw-shared /home/node
+
+USER node
+
+CMD ["node", "dist/index.js"]

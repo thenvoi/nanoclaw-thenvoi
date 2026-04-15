@@ -54,7 +54,7 @@ vi.mock('./mount-security.js', () => ({
 // Mock container-runtime
 vi.mock('./container-runtime.js', () => ({
   CONTAINER_RUNTIME_BIN: 'docker',
-  hostGatewayArgs: () => [],
+  hostGatewayArgs: vi.fn(() => []),
   readonlyMountArgs: (h: string, c: string) => ['-v', `${h}:${c}:ro`],
   stopContainer: vi.fn(),
 }));
@@ -106,6 +106,8 @@ vi.mock('child_process', async () => {
 });
 
 import { runContainerAgent, ContainerOutput } from './container-runner.js';
+import { spawn } from 'child_process';
+import { hostGatewayArgs } from './container-runtime.js';
 import type { RegisteredGroup } from './types.js';
 
 const testGroup: RegisteredGroup = {
@@ -133,6 +135,7 @@ function emitOutputMarker(
 describe('container-runner timeout behavior', () => {
   beforeEach(() => {
     vi.useFakeTimers();
+    vi.clearAllMocks();
     fakeProc = createFakeProcess();
   });
 
@@ -225,5 +228,49 @@ describe('container-runner timeout behavior', () => {
     const result = await resultPromise;
     expect(result.status).toBe('success');
     expect(result.newSessionId).toBe('session-456');
+  });
+
+  it('adds agent label and compose network when configured', async () => {
+    process.env.NANOCLAW_DOCKER_NETWORK = 'nanoclaw_default';
+    vi.resetModules();
+    const { runContainerAgent: runWithComposeEnv } =
+      await import('./container-runner.js');
+
+    const resultPromise = runWithComposeEnv(testGroup, testInput, () => {});
+    emitOutputMarker(fakeProc, {
+      status: 'success',
+      result: 'Done',
+    });
+    await vi.advanceTimersByTimeAsync(10);
+    fakeProc.emit('close', 0);
+    await vi.advanceTimersByTimeAsync(10);
+    await resultPromise;
+
+    expect(spawn).toHaveBeenCalledWith(
+      'docker',
+      expect.arrayContaining([
+        '--label',
+        'nanoclaw.agent=true',
+        '--network',
+        'nanoclaw_default',
+      ]),
+      expect.any(Object),
+    );
+
+    delete process.env.NANOCLAW_DOCKER_NETWORK;
+  });
+
+  it('uses host gateway args outside compose network', async () => {
+    const resultPromise = runContainerAgent(testGroup, testInput, () => {});
+    emitOutputMarker(fakeProc, {
+      status: 'success',
+      result: 'Done',
+    });
+    await vi.advanceTimersByTimeAsync(10);
+    fakeProc.emit('close', 0);
+    await vi.advanceTimersByTimeAsync(10);
+    await resultPromise;
+
+    expect(hostGatewayArgs).toHaveBeenCalled();
   });
 });
