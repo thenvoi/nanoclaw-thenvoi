@@ -803,9 +803,29 @@ async function runScript(script: string): Promise<ScriptResult | null> {
 
 function isThenvoiMemoryUnavailableError(err: unknown): boolean {
   const message = err instanceof Error ? err.message : String(err);
+  if (/UnsupportedFeature|not available in current REST adapter/i.test(message)) {
+    return true;
+  }
   return /status code:\s*404|404 - page not found|page not found/i.test(
     message,
   );
+}
+
+async function buildThenvoiAgentTools() {
+  const { ThenvoiClient } = await import('@thenvoi/rest-client');
+  const { FernRestAdapter } = await import('@thenvoi/sdk/rest');
+  const { AgentTools } = await import('@thenvoi/sdk/runtime');
+
+  const restUrl = process.env.THENVOI_REST_URL || '';
+  const baseUrl = restUrl.endsWith('/') ? restUrl : restUrl + '/';
+  const thenvoiApiKey = process.env.THENVOI_API_KEY || 'placeholder';
+  const client = new ThenvoiClient({ apiKey: thenvoiApiKey, baseUrl });
+  const rest = new FernRestAdapter(client as any); // eslint-disable-line @typescript-eslint/no-explicit-any
+  return new AgentTools({
+    roomId: process.env.THENVOI_ROOM_ID || '',
+    rest,
+    capabilities: { memory: true },
+  });
 }
 
 async function probeThenvoiMemoryToolsEnabled(): Promise<boolean> {
@@ -816,34 +836,17 @@ async function probeThenvoiMemoryToolsEnabled(): Promise<boolean> {
     return false;
   }
 
-  const restUrl = process.env.THENVOI_REST_URL || '';
-  const thenvoiApiKey = process.env.THENVOI_API_KEY || 'placeholder';
-  const baseUrl = restUrl.endsWith('/') ? restUrl : `${restUrl}/`;
-
   try {
-    const response = await fetch(
-      `${baseUrl}api/v1/agent/memories?page_size=1`,
-      {
-        headers: { 'X-API-Key': thenvoiApiKey },
-      },
-    );
-
-    if (response.status === 404) {
+    const tools = await buildThenvoiAgentTools();
+    await tools.listMemories({ page_size: 1 });
+    return true;
+  } catch (err) {
+    if (isThenvoiMemoryUnavailableError(err)) {
       log(
-        'Thenvoi memory API returned 404, disabling memory tools for this run',
+        'Thenvoi memory API unavailable, disabling memory tools for this run',
       );
       return false;
     }
-
-    if (!response.ok) {
-      log(
-        `Thenvoi memory probe returned status ${response.status}, keeping configured memory tools enabled`,
-      );
-      return true;
-    }
-
-    return true;
-  } catch (err) {
     log(
       `Thenvoi memory probe failed (${err instanceof Error ? err.message : String(err)}), keeping configured memory tools enabled`,
     );
@@ -913,36 +916,17 @@ async function main(): Promise<void> {
     process.env.NANOCLAW_CHANNEL === 'thenvoi'
   ) {
     try {
-      const { ThenvoiClient } = await import('@thenvoi/rest-client');
-      const { FernRestAdapter } = await import('@thenvoi/sdk/rest');
-      const { AgentTools } = await import('@thenvoi/sdk/runtime');
-
-      const restUrl = process.env.THENVOI_REST_URL || '';
-      const baseUrl = restUrl.endsWith('/') ? restUrl : restUrl + '/';
-      const thenvoiApiKey = process.env.THENVOI_API_KEY || 'placeholder';
-      const client = new ThenvoiClient({ apiKey: thenvoiApiKey, baseUrl });
-      const rest = new FernRestAdapter(client as any); // eslint-disable-line @typescript-eslint/no-explicit-any
-      const tools = new AgentTools({
-        roomId: process.env.THENVOI_ROOM_ID || '',
-        rest,
-        capabilities: { memory: true },
-      });
+      const tools = await buildThenvoiAgentTools();
       // Fetch participants to get IDs for memory loading
       const participants = await tools.getParticipants();
       log(`Room has ${participants.length} participants`);
 
       const allMemories: string[] = [];
       for (const participant of participants) {
-        const result = (await tools.executeToolCall('thenvoi_list_memories', {
+        const result = await tools.listMemories({
           subject_id: participant.id,
           scope: 'subject',
-        })) as {
-          data?: Array<{
-            content: string;
-            type?: string;
-            metadata?: { tags?: string[] };
-          }>;
-        };
+        });
 
         if (result?.data && result.data.length > 0) {
           const items = result.data.slice(0, 10);
