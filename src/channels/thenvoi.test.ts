@@ -19,13 +19,13 @@ let onParticipantAddedCallback:
     ) => Promise<void>)
   | null = null;
 let onParticipantRemovedCallback:
-  | ((roomId: string, participantId: string) => void)
+  | ((roomId: string, participantId: string) => Promise<void>)
   | null = null;
 let onRoomJoinedCallback:
   | ((
       roomId: string,
       payload?: { title?: string; inserted_at?: string },
-    ) => void)
+    ) => Promise<void>)
   | null = null;
 let onRoomLeftCallback: ((roomId: string) => void) | null = null;
 
@@ -41,15 +41,21 @@ const mockRuntime = {
   stop: vi.fn().mockResolvedValue(true),
 };
 
+let createdChatCount = 0;
+
 const mockLink = {
   isConnected: vi.fn().mockReturnValue(true),
   subscribeRoom: vi.fn().mockResolvedValue(undefined),
   rest: {
     createChatMessage: vi.fn().mockResolvedValue({}),
-    createChat: vi.fn().mockResolvedValue({ id: 'hub-room-1' }),
+    createChat: vi.fn().mockImplementation(async () => {
+      createdChatCount += 1;
+      return { id: createdChatCount === 1 ? 'main-room-1' : 'hub-room-1' };
+    }),
     addChatParticipant: vi.fn().mockResolvedValue({}),
     createChatEvent: vi.fn().mockResolvedValue({}),
     listChats: vi.fn().mockResolvedValue({ data: [], pagination: null }),
+    listChatParticipants: vi.fn().mockResolvedValue([]),
     getAgentMe: vi.fn().mockResolvedValue({
       id: 'agent-123',
       name: 'Test Agent',
@@ -80,8 +86,11 @@ vi.mock('@thenvoi/sdk', () => ({
         handle?: string | null;
       },
     ) => Promise<void>;
-    onParticipantRemoved?: (roomId: string, participantId: string) => void;
-    onRoomJoined?: (roomId: string, payload?: unknown) => void;
+    onParticipantRemoved?: (
+      roomId: string,
+      participantId: string,
+    ) => Promise<void>;
+    onRoomJoined?: (roomId: string, payload?: unknown) => Promise<void>;
     onRoomLeft?: (roomId: string) => void;
   }) {
     onExecuteCallback = opts.onExecute;
@@ -102,6 +111,7 @@ vi.mock('../env.js', () => ({
 vi.mock('../config.js', () => configMock);
 
 vi.mock('../db.js', () => ({
+  deleteSession: vi.fn(),
   setRegisteredGroup: vi.fn(),
   getAllRegisteredGroups: vi.fn().mockReturnValue({}),
   storeChatMetadata: vi.fn(),
@@ -118,7 +128,12 @@ vi.mock('../group-folder.js', () => ({
 // Must import AFTER mocks
 import { getChannelFactory } from './registry.js';
 import './thenvoi.js';
-import { storeMessage, storeChatMetadata, setRouterState } from '../db.js';
+import {
+  deleteSession,
+  setRouterState,
+  storeChatMetadata,
+  storeMessage,
+} from '../db.js';
 
 describe('Thenvoi Channel', () => {
   const savedEnv = { ...process.env };
@@ -137,6 +152,7 @@ describe('Thenvoi Channel', () => {
 
   beforeEach(() => {
     vi.clearAllMocks();
+    createdChatCount = 0;
     onExecuteCallback = null;
     onSessionCleanupCallback = null;
     onContactEventCallback = null;
@@ -147,6 +163,7 @@ describe('Thenvoi Channel', () => {
     configMock.THENVOI_CONTACT_STRATEGY = 'disabled';
     configMock.THENVOI_OWNER_ID = '';
     configMock.THENVOI_MEMORY_LOAD_ON_START = false;
+    mockLink.rest.listChatParticipants.mockResolvedValue([]);
     process.env.THENVOI_AGENT_ID = 'agent-123';
     process.env.THENVOI_API_KEY = 'key-abc';
     process.env.THENVOI_BASE_URL = 'https://test.thenvoi.com';
@@ -735,10 +752,10 @@ describe('Thenvoi Channel', () => {
       await ch.connect();
 
       // First join the room
-      onRoomJoinedCallback!('room-1', { title: 'Test Room' });
+      await onRoomJoinedCallback!('room-1', { title: 'Test Room' });
 
       // Then remove the agent (agentId = 'agent-123' from env)
-      onParticipantRemovedCallback!('room-1', 'agent-123');
+      await onParticipantRemovedCallback!('room-1', 'agent-123');
 
       expect(deregisterGroupFn).toHaveBeenCalledWith('thenvoi:room-1');
     });
@@ -748,8 +765,8 @@ describe('Thenvoi Channel', () => {
       await ch.connect();
       deregisterGroupFn.mockClear(); // clear any calls from connect() stale cleanup
 
-      onRoomJoinedCallback!('room-1', { title: 'Test Room' });
-      onParticipantRemovedCallback!('room-1', 'other-user-456');
+      await onRoomJoinedCallback!('room-1', { title: 'Test Room' });
+      await onParticipantRemovedCallback!('room-1', 'other-user-456');
 
       expect(deregisterGroupFn).not.toHaveBeenCalled();
     });
@@ -764,8 +781,8 @@ describe('Thenvoi Channel', () => {
       await ch.connect();
 
       // Join, then get removed
-      onRoomJoinedCallback!('room-1', { title: 'Test Room' });
-      onParticipantRemovedCallback!('room-1', 'agent-123');
+      await onRoomJoinedCallback!('room-1', { title: 'Test Room' });
+      await onParticipantRemovedCallback!('room-1', 'agent-123');
       expect(deregisterGroupFn).toHaveBeenCalledWith('thenvoi:room-1');
 
       // Simulate deregistration — group no longer in the map
@@ -796,8 +813,8 @@ describe('Thenvoi Channel', () => {
       });
       await ch.connect();
 
-      onRoomJoinedCallback!('room-1', { title: 'Test Room' });
-      onParticipantRemovedCallback!('room-1', 'agent-123');
+      await onRoomJoinedCallback!('room-1', { title: 'Test Room' });
+      await onParticipantRemovedCallback!('room-1', 'agent-123');
 
       expect(deregisterGroupFn).toHaveBeenCalledWith('thenvoi:room-1');
 
@@ -807,9 +824,19 @@ describe('Thenvoi Channel', () => {
   });
 
   describe('room lifecycle', () => {
-    function createChannelWithRegister() {
-      const registerGroupFn = vi.fn();
-      const deregisterGroupFn = vi.fn();
+    function createChannelWithRegister(
+      initialGroups: Record<string, unknown> = {},
+    ) {
+      let groups = initialGroups as ReturnType<typeof registeredGroups>;
+      registeredGroups.mockImplementation(() => groups);
+      const registerGroupFn = vi.fn((jid: string, group: unknown) => {
+        groups = { ...groups, [jid]: group as (typeof groups)[string] };
+      });
+      const deregisterGroupFn = vi.fn((jid: string) => {
+        const next = { ...groups };
+        delete next[jid];
+        groups = next;
+      });
       const ch = getChannelFactory('thenvoi')!({
         onMessage,
         onChatMetadata,
@@ -817,14 +844,54 @@ describe('Thenvoi Channel', () => {
         registerGroup: registerGroupFn,
         deregisterGroup: deregisterGroupFn,
       });
-      return { ch: ch!, registerGroupFn, deregisterGroupFn };
+      return {
+        ch: ch!,
+        registerGroupFn,
+        deregisterGroupFn,
+        getGroups: () => groups,
+      };
     }
 
-    it('registers group on room joined', async () => {
-      const { ch, registerGroupFn } = createChannelWithRegister();
+    it('creates and registers a stable main control room on connect', async () => {
+      const { ch, registerGroupFn, getGroups } = createChannelWithRegister();
       await ch.connect();
 
-      onRoomJoinedCallback!('room-new', { title: 'New Room' });
+      expect(mockLink.rest.createChat).toHaveBeenCalledTimes(1);
+      expect(mockLink.rest.addChatParticipant).toHaveBeenCalledWith(
+        'main-room-1',
+        {
+          participantId: 'owner-from-sdk',
+          role: 'member',
+        },
+      );
+      expect(setRouterState).toHaveBeenCalledWith(
+        'thenvoi_main_room_id',
+        'main-room-1',
+      );
+      expect(registerGroupFn).toHaveBeenCalledWith(
+        'thenvoi:main-room-1',
+        expect.objectContaining({
+          name: 'Main Control Room',
+          folder: 'thenvoi_main_room',
+          isMain: true,
+          requiresTrigger: false,
+        }),
+      );
+      expect(getGroups()['thenvoi:main-room-1']).toEqual(
+        expect.objectContaining({
+          folder: 'thenvoi_main_room',
+          isMain: true,
+        }),
+      );
+    });
+
+    it('registers ordinary rooms as non-main without participant lookups', async () => {
+      const { ch, registerGroupFn } = createChannelWithRegister();
+      await ch.connect();
+      registerGroupFn.mockClear();
+      mockLink.rest.listChatParticipants.mockClear();
+
+      await onRoomJoinedCallback!('room-new', { title: 'New Room' });
 
       expect(registerGroupFn).toHaveBeenCalledWith(
         'thenvoi:room-new',
@@ -832,7 +899,56 @@ describe('Thenvoi Channel', () => {
           name: 'New Room',
           folder: expect.stringMatching(/^thenvoi_/),
           requiresTrigger: false,
+          isMain: undefined,
         }),
+      );
+      expect(mockLink.rest.listChatParticipants).not.toHaveBeenCalled();
+    });
+
+    it('keeps a one-to-one room non-main and does not clear session on membership churn', async () => {
+      const { ch, registerGroupFn } = createChannelWithRegister();
+      await ch.connect();
+      registerGroupFn.mockClear();
+      vi.mocked(deleteSession).mockClear();
+
+      await onRoomJoinedCallback!('room-1', { title: 'Private Room' });
+      await onParticipantAddedCallback!('room-1', {
+        id: 'owner-from-sdk',
+        name: 'Owner',
+        type: 'User',
+      });
+      await onParticipantRemovedCallback!('room-1', 'owner-from-sdk');
+
+      expect(registerGroupFn).toHaveBeenCalledTimes(1);
+      expect(registerGroupFn).toHaveBeenCalledWith(
+        'thenvoi:room-1',
+        expect.objectContaining({
+          name: 'Private Room',
+          isMain: undefined,
+        }),
+      );
+      expect(deleteSession).not.toHaveBeenCalled();
+    });
+
+    it('removes stale persisted main-room registrations that are not the active control room', async () => {
+      const { ch, registerGroupFn, deregisterGroupFn } =
+        createChannelWithRegister({
+          'thenvoi:stale-main': {
+            name: 'Old Main Room',
+            folder: 'thenvoi_main_room',
+            trigger: '@Andy',
+            added_at: '2026-03-14T00:00:00Z',
+            requiresTrigger: false,
+            isMain: true,
+          },
+        });
+      await ch.connect();
+
+      expect(deleteSession).toHaveBeenCalledWith('thenvoi_main_room');
+      expect(deregisterGroupFn).toHaveBeenCalledWith('thenvoi:stale-main');
+      expect(registerGroupFn).not.toHaveBeenCalledWith(
+        'thenvoi:stale-main',
+        expect.anything(),
       );
     });
 
@@ -840,9 +956,11 @@ describe('Thenvoi Channel', () => {
       const { ch, deregisterGroupFn } = createChannelWithRegister();
       await ch.connect();
 
-      onRoomJoinedCallback!('room-1', { title: 'Test Room' });
+      await onRoomJoinedCallback!('room-1', { title: 'Test Room' });
+      vi.mocked(deleteSession).mockClear();
       onRoomLeftCallback!('room-1');
 
+      expect(deleteSession).toHaveBeenCalledWith('thenvoi_room1');
       expect(deregisterGroupFn).toHaveBeenCalledWith('thenvoi:room-1');
     });
 
@@ -850,9 +968,11 @@ describe('Thenvoi Channel', () => {
       const { ch, deregisterGroupFn } = createChannelWithRegister();
       await ch.connect();
 
-      onRoomJoinedCallback!('room-1', { title: 'Test Room' });
+      await onRoomJoinedCallback!('room-1', { title: 'Test Room' });
+      vi.mocked(deleteSession).mockClear();
       await onSessionCleanupCallback!('room-1');
 
+      expect(deleteSession).toHaveBeenCalledWith('thenvoi_room1');
       expect(deregisterGroupFn).toHaveBeenCalledWith('thenvoi:room-1');
     });
   });

@@ -24,6 +24,10 @@ import {
 } from '@anthropic-ai/claude-agent-sdk';
 import { fileURLToPath } from 'url';
 import type { ThenvoiSdkMcpServer } from '@thenvoi/sdk/mcp/claude';
+import {
+  createThenvoiToolsProxy,
+  isThenvoiMainControlRoom,
+} from '../../../src/thenvoi-control-room.js';
 
 interface ContainerInput {
   prompt: string;
@@ -379,7 +383,11 @@ async function runQuery(
   containerInput: ContainerInput,
   sdkEnv: Record<string, string | undefined>,
   resumeAt?: string,
-  opts?: { preloadedMemories?: string; isConsolidation?: boolean },
+  opts?: {
+    preloadedMemories?: string;
+    isConsolidation?: boolean;
+    thenvoiMemoryToolsEnabled?: boolean;
+  },
 ): Promise<{
   newSessionId?: string;
   lastAssistantUuid?: string;
@@ -425,8 +433,13 @@ async function runQuery(
 
   // Set up Thenvoi SDK MCP bridge (in-process, managed by SDK)
   let thenvoiMcpBridge: ThenvoiSdkMcpServer | undefined;
-  if (process.env.NANOCLAW_CHANNEL === 'thenvoi' && process.env.THENVOI_REST_URL && process.env.THENVOI_ROOM_ID) {
-    const { createThenvoiSdkMcpServer } = await import('@thenvoi/sdk/mcp/claude');
+  if (
+    process.env.NANOCLAW_CHANNEL === 'thenvoi' &&
+    process.env.THENVOI_REST_URL &&
+    process.env.THENVOI_ROOM_ID
+  ) {
+    const { createThenvoiSdkMcpServer } =
+      await import('@thenvoi/sdk/mcp/claude');
     const { ThenvoiClient } = await import('@thenvoi/rest-client');
     const { FernRestAdapter } = await import('@thenvoi/sdk/rest');
     const { AgentTools } = await import('@thenvoi/sdk/runtime');
@@ -434,18 +447,29 @@ async function runQuery(
     const restUrl = process.env.THENVOI_REST_URL;
     const baseUrl = restUrl.endsWith('/') ? restUrl : restUrl + '/';
     const thenvoiApiKey = process.env.THENVOI_API_KEY || 'placeholder';
+    const memoryToolsEnabled = opts?.thenvoiMemoryToolsEnabled === true;
+    const isMainControlRoom = isThenvoiMainControlRoom(
+      containerInput.groupFolder,
+    );
     // eslint-disable-next-line @typescript-eslint/no-explicit-any -- bind() wrappers widen method signatures
-    const rest = new FernRestAdapter(new ThenvoiClient({ apiKey: thenvoiApiKey, baseUrl }) as any);
+    const rest = new FernRestAdapter(
+      new ThenvoiClient({ apiKey: thenvoiApiKey, baseUrl }) as any,
+    );
     const agentTools = new AgentTools({
       roomId: process.env.THENVOI_ROOM_ID,
       rest,
-      capabilities: { peers: true, contacts: true, memory: process.env.THENVOI_MEMORY_TOOLS === 'true' },
+      capabilities: { peers: true, contacts: true, memory: memoryToolsEnabled },
+    });
+    const roomTools = createThenvoiToolsProxy(agentTools, {
+      blockParticipantAdds: isMainControlRoom,
     });
     thenvoiMcpBridge = createThenvoiSdkMcpServer({
-      enableMemoryTools: process.env.THENVOI_MEMORY_TOOLS === 'true',
-      getToolsForRoom: () => agentTools,
+      enableMemoryTools: memoryToolsEnabled,
+      getToolsForRoom: () => roomTools,
     });
-    log(`Thenvoi MCP bridge ready: ${thenvoiMcpBridge.allowedTools.length} tools`);
+    log(
+      `Thenvoi MCP bridge ready: ${thenvoiMcpBridge.allowedTools.length} tools (memory ${memoryToolsEnabled ? 'enabled' : 'disabled'})`,
+    );
   }
 
   // Thenvoi platform: append instructions that teach the agent to use platform tools
@@ -460,6 +484,17 @@ Messages show sender as [Name]: content. Messages prefixed with [System]: are pl
 
 **CRITICAL: Use tools to communicate.** Plain text output is NOT delivered to users.
 You MUST use \`mcp__thenvoi__thenvoi_send_message(content, mentions)\` to respond.
+
+**Workspace scope:** \`/workspace/group\` is room-local for this Thenvoi chat. \`/workspace/global\` is shared across Thenvoi conversations in this NanoClaw instance.
+- In main rooms, \`/workspace/global\` is writable.
+- In non-main rooms, \`/workspace/global\` is read-only.
+
+**CRITICAL: Scope facts correctly.**
+- User preferences, profile facts, long-lived reminders, and anything you may need in a different Thenvoi room belong in \`/workspace/global\`.
+- Room-specific notes, drafts, and temporary work for only this chat stay in \`/workspace/group\`.
+- Do NOT store cross-room user facts in \`/workspace/group\`.
+- If this room is non-main, do NOT claim you have persisted anything outside of the context of this room.
+- If this room is the main control room, do NOT add participants to it. It is a stable agent-owned control room, not an ad hoc collaboration room.
 
 ## Mention Format
 
@@ -476,7 +511,20 @@ You MUST call \`mcp__thenvoi__thenvoi_send_event(content, message_type="thought"
 This lets users see your reasoning process.
 
 ## CRITICAL: Delegate When You Cannot Help Directly
+`;
 
+    if (isMainControlRoom) {
+      platformInstructions += `
+When asked about something you can't answer directly from the main control room:
+1. Call \`mcp__thenvoi__thenvoi_lookup_peers()\` to find available specialized agents
+2. Mention an existing agent with \`mcp__thenvoi__thenvoi_send_message(content, mentions=["@owner-handle/agent-slug"])\`
+3. If no relevant agent is already present, explain that the main control room cannot add participants and ask the user to continue in a regular room for delegation
+4. Relay the response back to the user once an existing agent replies
+
+NEVER call \`mcp__thenvoi__thenvoi_add_participant(...)\` from the main control room.
+`;
+    } else {
+      platformInstructions += `
 When asked about something you can't answer directly:
 1. Call \`mcp__thenvoi__thenvoi_lookup_peers()\` to find available specialized agents
 2. If a relevant agent exists, call \`mcp__thenvoi__thenvoi_add_participant(name="Agent Name")\` to add them
@@ -484,7 +532,10 @@ When asked about something you can't answer directly:
 4. Wait for their response and relay it back to the user
 
 NEVER say "I can't do that" without first checking if another agent can help.
+`;
+    }
 
+    platformInstructions += `
 ## CRITICAL: Do NOT Remove Agents Automatically
 
 After adding an agent to help with a task, do NOT remove them. They stay silent unless mentioned.
@@ -495,7 +546,10 @@ After adding an agent to help with a task, do NOT remove them. They stay silent 
 [John Doe]: What's 2+2?
 -> mcp__thenvoi__thenvoi_send_event(content="Simple arithmetic, answering directly.", message_type="thought")
 -> mcp__thenvoi__thenvoi_send_message(content="4", mentions=["@john-doe"])
+`;
 
+    if (!isMainControlRoom) {
+      platformInstructions += `
 ### Delegation to another agent
 [John Doe]: What's the weather in Tokyo?
 -> mcp__thenvoi__thenvoi_send_event(content="I can't check weather. Looking for a weather agent.", message_type="thought")
@@ -509,9 +563,10 @@ After adding an agent to help with a task, do NOT remove them. They stay silent 
 -> mcp__thenvoi__thenvoi_send_event(content="Got weather response. Relaying back to John.", message_type="thought")
 -> mcp__thenvoi__thenvoi_send_message(content="The weather in Tokyo is 15°C and cloudy.", mentions=["@john-doe"])
 `;
+    }
 
     // Add memory guidance when memory tools are enabled
-    if (process.env.THENVOI_MEMORY_TOOLS === 'true') {
+    if (opts?.thenvoiMemoryToolsEnabled === true) {
       platformInstructions += `
 
 ## Platform Memory
@@ -540,7 +595,6 @@ Use it to store important information that should survive beyond this conversati
 - Add descriptive tags in metadata for searchability
 - Use \`mcp__thenvoi__thenvoi_supersede_memory(memory_id)\` when information changes instead of creating duplicates
 
-Local files (\`CLAUDE.md\`, workspace files) are for this group only.
 Platform memories persist across sessions and are visible to other agents in the organization.
 `;
     }
@@ -747,6 +801,59 @@ async function runScript(script: string): Promise<ScriptResult | null> {
   });
 }
 
+function isThenvoiMemoryUnavailableError(err: unknown): boolean {
+  const message = err instanceof Error ? err.message : String(err);
+  if (/UnsupportedFeature|not available in current REST adapter/i.test(message)) {
+    return true;
+  }
+  return /status code:\s*404|404 - page not found|page not found/i.test(
+    message,
+  );
+}
+
+async function buildThenvoiAgentTools() {
+  const { ThenvoiClient } = await import('@thenvoi/rest-client');
+  const { FernRestAdapter } = await import('@thenvoi/sdk/rest');
+  const { AgentTools } = await import('@thenvoi/sdk/runtime');
+
+  const restUrl = process.env.THENVOI_REST_URL || '';
+  const baseUrl = restUrl.endsWith('/') ? restUrl : restUrl + '/';
+  const thenvoiApiKey = process.env.THENVOI_API_KEY || 'placeholder';
+  const client = new ThenvoiClient({ apiKey: thenvoiApiKey, baseUrl });
+  const rest = new FernRestAdapter(client as any); // eslint-disable-line @typescript-eslint/no-explicit-any
+  return new AgentTools({
+    roomId: process.env.THENVOI_ROOM_ID || '',
+    rest,
+    capabilities: { memory: true },
+  });
+}
+
+async function probeThenvoiMemoryToolsEnabled(): Promise<boolean> {
+  if (
+    process.env.NANOCLAW_CHANNEL !== 'thenvoi' ||
+    process.env.THENVOI_MEMORY_TOOLS !== 'true'
+  ) {
+    return false;
+  }
+
+  try {
+    const tools = await buildThenvoiAgentTools();
+    await tools.listMemories({ page_size: 1 });
+    return true;
+  } catch (err) {
+    if (isThenvoiMemoryUnavailableError(err)) {
+      log(
+        'Thenvoi memory API unavailable, disabling memory tools for this run',
+      );
+      return false;
+    }
+    log(
+      `Thenvoi memory probe failed (${err instanceof Error ? err.message : String(err)}), keeping configured memory tools enabled`,
+    );
+    return true;
+  }
+}
+
 async function main(): Promise<void> {
   let containerInput: ContainerInput;
 
@@ -788,6 +895,8 @@ async function main(): Promise<void> {
     /* ignore */
   }
 
+  const thenvoiMemoryToolsEnabled = await probeThenvoiMemoryToolsEnabled();
+
   // Build initial prompt (drain any pending IPC messages too)
   let prompt = containerInput.prompt;
   if (containerInput.isScheduledTask) {
@@ -801,39 +910,35 @@ async function main(): Promise<void> {
 
   // Load existing memories before the first query (Thenvoi only, opt-in)
   let preloadedMemories = '';
-  if (process.env.THENVOI_MEMORY_LOAD_ON_START === 'true' && process.env.NANOCLAW_CHANNEL === 'thenvoi') {
+  if (
+    thenvoiMemoryToolsEnabled &&
+    process.env.THENVOI_MEMORY_LOAD_ON_START === 'true' &&
+    process.env.NANOCLAW_CHANNEL === 'thenvoi'
+  ) {
     try {
-      const { ThenvoiClient } = await import('@thenvoi/rest-client');
-      const { FernRestAdapter } = await import('@thenvoi/sdk/rest');
-      const { AgentTools } = await import('@thenvoi/sdk/runtime');
-
-      const restUrl = process.env.THENVOI_REST_URL || '';
-      const baseUrl = restUrl.endsWith('/') ? restUrl : restUrl + '/';
-      const thenvoiApiKey = process.env.THENVOI_API_KEY || 'placeholder';
-      const client = new ThenvoiClient({ apiKey: thenvoiApiKey, baseUrl });
-      const rest = new FernRestAdapter(client as any); // eslint-disable-line @typescript-eslint/no-explicit-any
-      const tools = new AgentTools({
-        roomId: process.env.THENVOI_ROOM_ID || '',
-        rest,
-        capabilities: { memory: true },
-      });
+      const tools = await buildThenvoiAgentTools();
       // Fetch participants to get IDs for memory loading
       const participants = await tools.getParticipants();
       log(`Room has ${participants.length} participants`);
 
       const allMemories: string[] = [];
       for (const participant of participants) {
-        const result = await tools.executeToolCall('thenvoi_list_memories', {
-          subject_id: participant.id, scope: 'subject',
-        }) as { data?: Array<{ content: string; type?: string; metadata?: { tags?: string[] } }> };
+        const result = await tools.listMemories({
+          subject_id: participant.id,
+          scope: 'subject',
+        });
 
         if (result?.data && result.data.length > 0) {
           const items = result.data.slice(0, 10);
-          const userMemories = items.map((m) =>
-            `- [${m.type || 'memory'}] ${m.content}`
-          ).join('\n');
-          const handle = participant.handle ? `, handle: ${participant.handle}` : '';
-          allMemories.push(`### ${participant.name} (id: ${participant.id}${handle})\n${userMemories}`);
+          const userMemories = items
+            .map((m) => `- [${m.type || 'memory'}] ${m.content}`)
+            .join('\n');
+          const handle = participant.handle
+            ? `, handle: ${participant.handle}`
+            : '';
+          allMemories.push(
+            `### ${participant.name} (id: ${participant.id}${handle})\n${userMemories}`,
+          );
         }
       }
 
@@ -842,7 +947,15 @@ async function main(): Promise<void> {
         log(`Loaded memories for ${allMemories.length} user(s)`);
       }
     } catch (err) {
-      log(`Failed to load memories (continuing without): ${err instanceof Error ? err.message : String(err)}`);
+      if (isThenvoiMemoryUnavailableError(err)) {
+        log(
+          'Thenvoi memory API unavailable during preload, continuing with memory tools disabled for this run',
+        );
+      } else {
+        log(
+          `Failed to load memories (continuing without): ${err instanceof Error ? err.message : String(err)}`,
+        );
+      }
     }
   }
 
@@ -883,7 +996,10 @@ async function main(): Promise<void> {
         containerInput,
         sdkEnv,
         resumeAt,
-        { preloadedMemories },
+        {
+          preloadedMemories,
+          thenvoiMemoryToolsEnabled,
+        },
       );
       if (queryResult.newSessionId) {
         sessionId = queryResult.newSessionId;
@@ -916,9 +1032,12 @@ async function main(): Promise<void> {
       prompt = nextMessage;
     }
     // Memory consolidation on exit (Thenvoi only, opt-in)
-    if (process.env.THENVOI_MEMORY_CONSOLIDATION === 'true'
-        && process.env.NANOCLAW_CHANNEL === 'thenvoi'
-        && sessionId) {
+    if (
+      thenvoiMemoryToolsEnabled &&
+      process.env.THENVOI_MEMORY_CONSOLIDATION === 'true' &&
+      process.env.NANOCLAW_CHANNEL === 'thenvoi' &&
+      sessionId
+    ) {
       const consolidationPrompt = `You are now in memory consolidation mode. The conversation has ended.
 Your job is to review what happened and manage long-term memories.
 
@@ -958,10 +1077,23 @@ Report what you stored/superseded via mcp__thenvoi__thenvoi_send_event(content, 
 
       log('Running memory consolidation...');
       try {
-        await runQuery(consolidationPrompt, sessionId, mcpServerPath, containerInput, sdkEnv, resumeAt, { isConsolidation: true });
+        await runQuery(
+          consolidationPrompt,
+          sessionId,
+          mcpServerPath,
+          containerInput,
+          sdkEnv,
+          resumeAt,
+          {
+            isConsolidation: true,
+            thenvoiMemoryToolsEnabled,
+          },
+        );
         log('Memory consolidation complete');
       } catch (err) {
-        log(`Memory consolidation failed (non-fatal): ${err instanceof Error ? err.message : String(err)}`);
+        log(
+          `Memory consolidation failed (non-fatal): ${err instanceof Error ? err.message : String(err)}`,
+        );
       }
     }
   } catch (err) {
@@ -977,4 +1109,6 @@ Report what you stored/superseded via mcp__thenvoi__thenvoi_send_event(content, 
   }
 }
 
-main();
+if (process.env.VITEST !== 'true') {
+  main();
+}

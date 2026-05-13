@@ -7,6 +7,7 @@ import { readEnvFile } from '../env.js';
 import { resolveGroupFolderPath } from '../group-folder.js';
 import { isValidGroupFolder } from '../group-folder.js';
 import {
+  deleteSession,
   getRouterState,
   setRouterState,
   storeChatMetadata,
@@ -30,17 +31,42 @@ function roomFolder(roomId: string): string {
   return `thenvoi_${short}`;
 }
 
-/** Register a platform room as a NanoClaw group if not already registered. */
-function ensureGroupRegistered(
-  jid: string,
+function sameGroupConfig(
+  left: RegisteredGroup | undefined,
+  right: RegisteredGroup,
+): boolean {
+  if (!left) return false;
+  return (
+    left.name === right.name &&
+    left.folder === right.folder &&
+    left.trigger === right.trigger &&
+    left.added_at === right.added_at &&
+    JSON.stringify(left.containerConfig ?? null) ===
+      JSON.stringify(right.containerConfig ?? null) &&
+    left.requiresTrigger === right.requiresTrigger &&
+    left.isMain === right.isMain
+  );
+}
+
+const MAIN_ROOM_NAME = 'Main Control Room';
+const MAIN_ROOM_FOLDER = 'thenvoi_main_room';
+const MAIN_ROOM_STATE_KEY = 'thenvoi_main_room_id';
+
+function upsertRoomRegistration(
   roomId: string,
   title: string | undefined,
   opts: ChannelOpts,
+  overrides?: Partial<RegisteredGroup>,
 ): void {
-  if (opts.registeredGroups()[jid]) return;
   if (!opts.registerGroup) return;
 
-  const folder = roomFolder(roomId);
+  const jid = `thenvoi:${roomId}`;
+  const existing = opts.registeredGroups()[jid];
+  const folder =
+    overrides?.folder ??
+    (existing?.folder && existing.folder !== MAIN_ROOM_FOLDER
+      ? existing.folder
+      : roomFolder(roomId));
   if (!isValidGroupFolder(folder)) {
     logger.warn(
       { jid, folder },
@@ -49,13 +75,42 @@ function ensureGroupRegistered(
     return;
   }
 
-  opts.registerGroup(jid, {
-    name: title || `Thenvoi ${roomId.slice(0, 8)}`,
+  const nextGroup: RegisteredGroup = {
+    name:
+      overrides?.name ||
+      title ||
+      existing?.name ||
+      `Thenvoi ${roomId.slice(0, 8)}`,
     folder,
-    trigger: `@${ASSISTANT_NAME}`,
-    added_at: new Date().toISOString(),
-    requiresTrigger: false,
-  });
+    trigger: overrides?.trigger || existing?.trigger || `@${ASSISTANT_NAME}`,
+    added_at:
+      overrides?.added_at || existing?.added_at || new Date().toISOString(),
+    containerConfig: overrides?.containerConfig ?? existing?.containerConfig,
+    requiresTrigger:
+      overrides?.requiresTrigger ?? existing?.requiresTrigger ?? false,
+    isMain: overrides?.isMain === true ? true : undefined,
+  };
+
+  if (sameGroupConfig(existing, nextGroup)) return;
+  opts.registerGroup(jid, nextGroup);
+
+  if (
+    existing &&
+    (existing.folder !== nextGroup.folder ||
+      existing.isMain !== nextGroup.isMain)
+  ) {
+    logger.info(
+      {
+        roomId,
+        previousFolder: existing.folder,
+        nextFolder: nextGroup.folder,
+        wasMain: existing.isMain === true,
+        isMain: nextGroup.isMain === true,
+      },
+      'Thenvoi: registration changed across session boundary, clearing persisted session',
+    );
+    deleteSession(existing.folder);
+  }
 }
 
 registerChannel('thenvoi', (opts) => {
@@ -74,11 +129,162 @@ registerChannel('thenvoi', (opts) => {
   let link: ThenvoiLink;
   let runtime: AgentRuntime;
   const activeRoomIds = new Set<string>();
+  let mainRoomId: string | null = null;
+  let mainRoomInitPromise: Promise<string> | null = null;
 
   // Contact event deduplication (LRU, max 1000)
   const contactDedup = new Set<string>();
   const contactDedupOrder: string[] = [];
   const MAX_CONTACT_DEDUP = 1000;
+
+  function getRegisteredRoom(roomId: string): RegisteredGroup | undefined {
+    return opts.registeredGroups()[`thenvoi:${roomId}`];
+  }
+
+  function isCurrentMainRoom(roomId: string): boolean {
+    return mainRoomId === roomId;
+  }
+
+  function clearPersistedRoomSession(roomId: string, reason: string): void {
+    const group = getRegisteredRoom(roomId);
+    if (!group) return;
+    logger.info({ roomId, folder: group.folder }, reason);
+    deleteSession(group.folder);
+  }
+
+  function clearMainRoomState(roomId: string, reason: string): void {
+    const group = getRegisteredRoom(roomId);
+    if (mainRoomId !== roomId && group?.folder !== MAIN_ROOM_FOLDER) return;
+    mainRoomId = null;
+    mainRoomInitPromise = null;
+    setRouterState(MAIN_ROOM_STATE_KEY, '');
+    logger.info({ roomId }, reason);
+  }
+
+  function upsertKnownRoomRegistration(roomId: string, title?: string): void {
+    upsertRoomRegistration(
+      roomId,
+      title,
+      opts,
+      isCurrentMainRoom(roomId)
+        ? {
+            name: MAIN_ROOM_NAME,
+            folder: MAIN_ROOM_FOLDER,
+            isMain: true,
+          }
+        : undefined,
+    );
+  }
+
+  async function ensureMainRoom(
+    thenvoiLink: ThenvoiLink,
+    channelOpts: ChannelOpts,
+  ): Promise<string> {
+    if (mainRoomId) return mainRoomId;
+    if (mainRoomInitPromise) return mainRoomInitPromise;
+
+    mainRoomInitPromise = (async () => {
+      const persisted = getRouterState(MAIN_ROOM_STATE_KEY);
+      if (persisted) {
+        const existing = channelOpts.registeredGroups()[`thenvoi:${persisted}`];
+        if (existing && existing.folder === MAIN_ROOM_FOLDER) {
+          mainRoomId = persisted;
+          storeChatMetadata(
+            `thenvoi:${persisted}`,
+            new Date().toISOString(),
+            MAIN_ROOM_NAME,
+            'thenvoi',
+            true,
+          );
+          upsertRoomRegistration(persisted, MAIN_ROOM_NAME, channelOpts, {
+            name: MAIN_ROOM_NAME,
+            folder: MAIN_ROOM_FOLDER,
+            isMain: true,
+          });
+          await thenvoiLink.subscribeRoom(persisted);
+          logger.info(
+            { mainRoomId },
+            'Thenvoi: reusing existing main control room',
+          );
+          return persisted;
+        }
+        logger.warn(
+          { persisted },
+          'Thenvoi: stale main room ID, creating new main control room',
+        );
+        setRouterState(MAIN_ROOM_STATE_KEY, '');
+      }
+
+      if (typeof thenvoiLink.rest.createChat !== 'function') {
+        throw new Error(
+          'Thenvoi: REST adapter missing createChat endpoint, cannot create main control room',
+        );
+      }
+
+      logger.info('Thenvoi: creating main control room');
+      const result = await thenvoiLink.rest.createChat();
+      const newRoomId = result.id;
+      const ownerId = await resolveHubRoomOwnerId(thenvoiLink);
+
+      if (
+        ownerId &&
+        typeof thenvoiLink.rest.addChatParticipant === 'function'
+      ) {
+        try {
+          await thenvoiLink.rest.addChatParticipant(newRoomId, {
+            participantId: ownerId,
+            role: 'member',
+          });
+          logger.info(
+            { ownerId, mainRoomId: newRoomId },
+            'Thenvoi: owner added to main control room',
+          );
+        } catch (err) {
+          logger.warn(
+            { err, ownerId },
+            'Thenvoi: failed to add owner to main control room',
+          );
+        }
+      } else if (ownerId) {
+        logger.warn(
+          'Thenvoi: REST adapter missing addChatParticipant endpoint, owner will not be added to main control room',
+        );
+      } else {
+        logger.warn(
+          'Thenvoi: no owner UUID available - owner will not see main control room',
+        );
+      }
+
+      setRouterState(MAIN_ROOM_STATE_KEY, newRoomId);
+      mainRoomId = newRoomId;
+      activeRoomIds.add(newRoomId);
+      storeChatMetadata(
+        `thenvoi:${newRoomId}`,
+        new Date().toISOString(),
+        MAIN_ROOM_NAME,
+        'thenvoi',
+        true,
+      );
+      upsertRoomRegistration(newRoomId, MAIN_ROOM_NAME, channelOpts, {
+        name: MAIN_ROOM_NAME,
+        folder: MAIN_ROOM_FOLDER,
+        isMain: true,
+      });
+      await thenvoiLink.subscribeRoom(newRoomId);
+      logger.info(
+        { mainRoomId: newRoomId },
+        'Thenvoi: main control room created',
+      );
+      return newRoomId;
+    })();
+
+    try {
+      return await mainRoomInitPromise;
+    } catch (err) {
+      mainRoomInitPromise = null;
+      throw err;
+    }
+  }
 
   async function syncRoomsFromApi(): Promise<void> {
     try {
@@ -89,6 +295,7 @@ registerChannel('thenvoi', (opts) => {
         return;
       }
 
+      const ensuredMainRoomId = await ensureMainRoom(link, opts);
       const response = await link.rest.listChats({
         page: 1,
         pageSize: 100,
@@ -96,6 +303,7 @@ registerChannel('thenvoi', (opts) => {
       const rooms = response.data.map(normalizeRoomRecord);
 
       activeRoomIds.clear();
+      activeRoomIds.add(ensuredMainRoomId);
 
       for (const room of rooms) {
         activeRoomIds.add(room.id);
@@ -103,14 +311,29 @@ registerChannel('thenvoi', (opts) => {
 
         const jid = `thenvoi:${room.id}`;
         const title = room.title ?? undefined;
-        ensureGroupRegistered(jid, room.id, title, opts);
+        upsertKnownRoomRegistration(room.id, title);
         opts.onChatMetadata(
           jid,
           room.updatedAt || room.insertedAt || new Date().toISOString(),
-          title,
+          isCurrentMainRoom(room.id) ? MAIN_ROOM_NAME : title,
           'thenvoi',
           true,
         );
+      }
+
+      for (const [jid, group] of Object.entries(opts.registeredGroups())) {
+        if (!jid.startsWith('thenvoi:')) continue;
+        if (
+          group.folder !== MAIN_ROOM_FOLDER ||
+          jid === `thenvoi:${ensuredMainRoomId}`
+        ) {
+          continue;
+        }
+        clearPersistedRoomSession(
+          jid.replace('thenvoi:', ''),
+          'Thenvoi: removing stale main-room registration, clearing persisted session',
+        );
+        opts.deregisterGroup?.(jid);
       }
     } catch (err) {
       logger.warn({ err }, 'Thenvoi: failed to sync rooms via agent API');
@@ -142,6 +365,8 @@ registerChannel('thenvoi', (opts) => {
         );
       }
 
+      await ensureMainRoom(link, opts);
+
       runtime = new AgentRuntime({
         link,
         agentId,
@@ -171,8 +396,9 @@ registerChannel('thenvoi', (opts) => {
           const roomId = context.roomId;
           const jid = `thenvoi:${roomId}`;
 
-          // Ensure group is registered (idempotent — checks in-memory map)
-          ensureGroupRegistered(jid, roomId, undefined, opts);
+          // Ensure the room is registered. Main-room privilege is stable and
+          // tied to the persisted control-room ID, not current membership.
+          upsertKnownRoomRegistration(roomId);
 
           // Store message — NanoClaw's message loop picks it up
           opts.onMessage(jid, {
@@ -201,7 +427,7 @@ registerChannel('thenvoi', (opts) => {
           }
         },
 
-        onRoomJoined(roomId, payload) {
+        async onRoomJoined(roomId, payload) {
           activeRoomIds.add(roomId);
           const jid = `thenvoi:${roomId}`;
           const title =
@@ -210,13 +436,13 @@ registerChannel('thenvoi', (opts) => {
             { roomId, title, activeRooms: activeRoomIds.size },
             'Thenvoi: room joined',
           );
-          ensureGroupRegistered(jid, roomId, title, opts);
+          upsertKnownRoomRegistration(roomId, title);
           opts.onChatMetadata(
             jid,
             typeof payload?.inserted_at === 'string'
               ? payload.inserted_at
               : new Date().toISOString(),
-            title,
+            isCurrentMainRoom(roomId) ? MAIN_ROOM_NAME : title,
             'thenvoi',
             true,
           );
@@ -228,7 +454,17 @@ registerChannel('thenvoi', (opts) => {
             { roomId, activeRooms: activeRoomIds.size },
             'Thenvoi: room left',
           );
+          clearPersistedRoomSession(
+            roomId,
+            'Thenvoi: room left, clearing persisted session for next spawn',
+          );
           opts.deregisterGroup?.(`thenvoi:${roomId}`);
+          if (isCurrentMainRoom(roomId)) {
+            clearMainRoomState(
+              roomId,
+              'Thenvoi: main control room deleted, will re-create on next sync',
+            );
+          }
           // If the hub room was deleted, clear persisted ID so it's re-created
           if (hubRoomId === roomId) {
             hubRoomId = null;
@@ -243,14 +479,24 @@ registerChannel('thenvoi', (opts) => {
         async onSessionCleanup(roomId) {
           logger.info({ roomId }, 'Thenvoi: session cleanup');
           activeRoomIds.delete(roomId);
+          clearPersistedRoomSession(
+            roomId,
+            'Thenvoi: session cleanup, clearing persisted session for next spawn',
+          );
           opts.deregisterGroup?.(`thenvoi:${roomId}`);
+          if (isCurrentMainRoom(roomId)) {
+            clearMainRoomState(
+              roomId,
+              'Thenvoi: main control room cleaned up, will re-create on next sync',
+            );
+          }
         },
 
         async onContactEvent(event: ContactEvent) {
           await handleContactEvent(event, link, opts, agentId);
         },
 
-        onParticipantRemoved(roomId, participantId) {
+        async onParticipantRemoved(roomId, participantId) {
           logger.info(
             { roomId, participantId },
             'Thenvoi: participant removed',
@@ -262,7 +508,17 @@ registerChannel('thenvoi', (opts) => {
               'Thenvoi: agent was removed from room, deregistering',
             );
             activeRoomIds.delete(roomId);
+            clearPersistedRoomSession(
+              roomId,
+              'Thenvoi: agent removed from room, clearing persisted session for next spawn',
+            );
             opts.deregisterGroup?.(`thenvoi:${roomId}`);
+            if (isCurrentMainRoom(roomId)) {
+              clearMainRoomState(
+                roomId,
+                'Thenvoi: main control room lost agent membership, will re-create on next sync',
+              );
+            }
           }
         },
 
@@ -279,8 +535,7 @@ registerChannel('thenvoi', (opts) => {
           // If the agent itself was re-added, re-register the group
           if (participant.id === agentId) {
             activeRoomIds.add(roomId);
-            const jid = `thenvoi:${roomId}`;
-            ensureGroupRegistered(jid, roomId, undefined, opts);
+            upsertKnownRoomRegistration(roomId);
             logger.info(
               { roomId },
               'Thenvoi: agent re-added to room, re-registered',
@@ -361,7 +616,22 @@ registerChannel('thenvoi', (opts) => {
       for (const jid of Object.keys(groups)) {
         if (!jid.startsWith('thenvoi:')) continue;
         const roomId = jid.replace('thenvoi:', '');
+        const group = groups[jid];
+        if (group?.folder === MAIN_ROOM_FOLDER) {
+          if (!isCurrentMainRoom(roomId)) {
+            clearPersistedRoomSession(
+              roomId,
+              'Thenvoi: stale main-room registration found, clearing persisted session',
+            );
+            opts.deregisterGroup?.(jid);
+          }
+          continue;
+        }
         if (!activeRoomIds.has(roomId)) {
+          clearPersistedRoomSession(
+            roomId,
+            'Thenvoi: stale room missing from sync, clearing persisted session',
+          );
           opts.deregisterGroup?.(jid);
         }
       }
