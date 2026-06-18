@@ -8,5 +8,3 @@
 
 import './cli.js';
 import './band.js';
-import './telegram.js';
-import './whatsapp.js';
