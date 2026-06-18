@@ -5,10 +5,36 @@
  * Two patterns: native adapters (implement directly) or Chat SDK bridge (wrap a Chat SDK adapter).
  */
 
+export type InboundRouteResult =
+  | {
+      status: 'persisted';
+      platformMessageId: string;
+      sessionIds: string[];
+      sessionMessageIds: string[];
+    }
+  | {
+      status: 'dropped';
+      platformMessageId: string;
+      reason: string;
+      audited: true;
+      retryable: boolean;
+      intentional: boolean;
+    }
+  | {
+      status: 'failed';
+      platformMessageId: string;
+      reason: string;
+      retryable: boolean;
+    };
+
 /** Passed to the adapter at setup time. */
 export interface ChannelSetup {
   /** Called when an inbound message arrives from the platform. */
-  onInbound(platformId: string, threadId: string | null, message: InboundMessage): void | Promise<void>;
+  onInbound(
+    platformId: string,
+    threadId: string | null,
+    message: InboundMessage,
+  ): void | InboundRouteResult | Promise<void | InboundRouteResult>;
 
   /**
    * Called by admin-transport adapters (CLI) that want to route a message to
@@ -16,7 +42,7 @@ export interface ChannelSetup {
    * Regular chat adapters should use `onInbound`; `onInboundEvent` skips the
    * adapter-channel-type injection so the caller can target any wired mg.
    */
-  onInboundEvent(event: InboundEvent): void | Promise<void>;
+  onInboundEvent(event: InboundEvent): void | InboundRouteResult | Promise<void | InboundRouteResult>;
 
   /** Called when the adapter discovers metadata about a conversation. */
   onMetadata(platformId: string, name?: string, isGroup?: boolean): void;

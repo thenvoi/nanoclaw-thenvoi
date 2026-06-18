@@ -13,14 +13,17 @@ vi.mock('./log.js', () => ({
 
 // Mock child_process — store the mock fn so tests can configure it
 const mockExecSync = vi.fn();
+const mockSpawn = vi.fn();
 vi.mock('child_process', () => ({
   execSync: (...args: unknown[]) => mockExecSync(...args),
+  spawn: (...args: unknown[]) => mockSpawn(...args),
 }));
 
 import {
   CONTAINER_RUNTIME_BIN,
   readonlyMountArgs,
   stopContainer,
+  stopContainerAsync,
   ensureContainerRuntimeRunning,
   cleanupOrphans,
 } from './container-runtime.js';
@@ -48,11 +51,54 @@ describe('stopContainer', () => {
     });
   });
 
+  it('forwards a custom timeout', () => {
+    stopContainer('nanoclaw-test-456', 30);
+    expect(mockExecSync).toHaveBeenCalledWith(`${CONTAINER_RUNTIME_BIN} stop -t 30 nanoclaw-test-456`, {
+      stdio: 'pipe',
+    });
+  });
+
   it('rejects names with shell metacharacters', () => {
     expect(() => stopContainer('foo; rm -rf /')).toThrow('Invalid container name');
     expect(() => stopContainer('foo$(whoami)')).toThrow('Invalid container name');
     expect(() => stopContainer('foo`id`')).toThrow('Invalid container name');
     expect(mockExecSync).not.toHaveBeenCalled();
+  });
+
+  it('rejects negative or non-integer timeouts', () => {
+    expect(() => stopContainer('nanoclaw-test', -1)).toThrow('Invalid stop timeout');
+    expect(() => stopContainer('nanoclaw-test', 1.5)).toThrow('Invalid stop timeout');
+    expect(mockExecSync).not.toHaveBeenCalled();
+  });
+});
+
+describe('stopContainerAsync', () => {
+  function fakeChild() {
+    return { on: vi.fn(), unref: vi.fn() };
+  }
+
+  it('spawns docker stop detached and returns immediately', () => {
+    const child = fakeChild();
+    mockSpawn.mockReturnValueOnce(child);
+
+    stopContainerAsync('nanoclaw-band-789', 1800);
+
+    expect(mockSpawn).toHaveBeenCalledWith(CONTAINER_RUNTIME_BIN, ['stop', '-t', '1800', 'nanoclaw-band-789'], {
+      stdio: 'ignore',
+      detached: true,
+    });
+    expect(child.unref).toHaveBeenCalled();
+  });
+
+  it('rejects names with shell metacharacters', () => {
+    expect(() => stopContainerAsync('foo; rm -rf /', 30)).toThrow('Invalid container name');
+    expect(mockSpawn).not.toHaveBeenCalled();
+  });
+
+  it('rejects negative or non-integer timeouts', () => {
+    expect(() => stopContainerAsync('nanoclaw-test', -5)).toThrow('Invalid stop timeout');
+    expect(() => stopContainerAsync('nanoclaw-test', 2.5)).toThrow('Invalid stop timeout');
+    expect(mockSpawn).not.toHaveBeenCalled();
   });
 });
 

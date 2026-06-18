@@ -2,7 +2,7 @@
  * Container runtime abstraction for NanoClaw.
  * All runtime-specific logic lives here so swapping runtimes means changing one file.
  */
-import { execSync } from 'child_process';
+import { type ChildProcess, execSync, spawn } from 'child_process';
 import os from 'os';
 
 import { CONTAINER_INSTALL_LABEL } from './config.js';
@@ -25,12 +25,44 @@ export function readonlyMountArgs(hostPath: string, containerPath: string): stri
   return ['-v', `${hostPath}:${containerPath}:ro`];
 }
 
-/** Stop a container by name. Uses execFileSync to avoid shell injection. */
-export function stopContainer(name: string): void {
+/**
+ * Stop a container by name. Uses execFileSync to avoid shell injection.
+ *
+ * `timeoutSec` is forwarded as `docker stop -t` — the runtime sends SIGTERM,
+ * waits up to that many seconds for the entrypoint to exit, then SIGKILLs.
+ * Default 1s matches the historical behavior; bump it when the container
+ * needs to do real work in its SIGTERM handler (e.g. Band.ai memory
+ * consolidation).
+ */
+export function stopContainer(name: string, timeoutSec: number = 1): void {
   if (!/^[a-zA-Z0-9][a-zA-Z0-9_.-]*$/.test(name)) {
     throw new Error(`Invalid container name: ${name}`);
   }
-  execSync(`${CONTAINER_RUNTIME_BIN} stop -t 1 ${name}`, { stdio: 'pipe' });
+  if (!Number.isInteger(timeoutSec) || timeoutSec < 0) {
+    throw new Error(`Invalid stop timeout: ${timeoutSec}`);
+  }
+  execSync(`${CONTAINER_RUNTIME_BIN} stop -t ${timeoutSec} ${name}`, { stdio: 'pipe' });
+}
+
+/**
+ * Fire-and-forget variant: spawns `docker stop` detached and returns
+ * immediately, so a long shutdown grace period (e.g. for Band.ai memory
+ * consolidation) doesn't block the host's sweep loop. The runtime still
+ * SIGTERMs first, waits up to `timeoutSec`, then SIGKILLs.
+ */
+export function stopContainerAsync(name: string, timeoutSec: number): ChildProcess {
+  if (!/^[a-zA-Z0-9][a-zA-Z0-9_.-]*$/.test(name)) {
+    throw new Error(`Invalid container name: ${name}`);
+  }
+  if (!Number.isInteger(timeoutSec) || timeoutSec < 0) {
+    throw new Error(`Invalid stop timeout: ${timeoutSec}`);
+  }
+  const child = spawn(CONTAINER_RUNTIME_BIN, ['stop', '-t', String(timeoutSec), name], {
+    stdio: 'ignore',
+    detached: true,
+  });
+  child.unref();
+  return child;
 }
 
 /** Ensure the container runtime is running, starting it if needed. */

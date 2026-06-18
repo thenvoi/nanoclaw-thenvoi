@@ -91,6 +91,40 @@ export function nextEvenSeq(db: Database.Database): number {
   return maxSeq < 2 ? 2 : maxSeq + 2 - (maxSeq % 2);
 }
 
+function normalizeDbValue(value: unknown): string | number | null {
+  return value === undefined ? null : (value as string | number | null);
+}
+
+function existingMessageMatches(
+  existing: Record<string, unknown>,
+  message: {
+    id: string;
+    kind: string;
+    timestamp: string;
+    platformId: string | null;
+    channelType: string | null;
+    threadId: string | null;
+    content: string;
+    processAfter: string | null;
+    recurrence: string | null;
+    trigger?: 0 | 1;
+    sourceSessionId?: string | null;
+  },
+): boolean {
+  return (
+    existing.kind === message.kind &&
+    existing.timestamp === message.timestamp &&
+    normalizeDbValue(existing.platform_id) === message.platformId &&
+    normalizeDbValue(existing.channel_type) === message.channelType &&
+    normalizeDbValue(existing.thread_id) === message.threadId &&
+    existing.content === message.content &&
+    normalizeDbValue(existing.process_after) === message.processAfter &&
+    normalizeDbValue(existing.recurrence) === message.recurrence &&
+    existing.trigger === (message.trigger ?? 1) &&
+    normalizeDbValue(existing.source_session_id) === (message.sourceSessionId ?? null)
+  );
+}
+
 export function insertMessage(
   db: Database.Database,
   message: {
@@ -116,6 +150,16 @@ export function insertMessage(
     sourceSessionId?: string | null;
   },
 ): void {
+  const existing = db.prepare('SELECT * FROM messages_in WHERE id = ?').get(message.id) as
+    | Record<string, unknown>
+    | undefined;
+  if (existing) {
+    if (!existingMessageMatches(existing, message)) {
+      throw new Error(`Conflicting messages_in row for id ${message.id}`);
+    }
+    return;
+  }
+
   db.prepare(
     `INSERT INTO messages_in (id, seq, kind, timestamp, status, platform_id, channel_type, thread_id, content, process_after, recurrence, series_id, trigger, source_session_id)
      VALUES (@id, @seq, @kind, @timestamp, 'pending', @platformId, @channelType, @threadId, @content, @processAfter, @recurrence, @id, @trigger, @sourceSessionId)`,

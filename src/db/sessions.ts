@@ -67,6 +67,21 @@ export function getActiveSessions(): Session[] {
   return getDb().prepare("SELECT * FROM sessions WHERE status = 'active'").all() as Session[];
 }
 
+export function getActiveSessionsByMessagingGroup(messagingGroupId: string): Session[] {
+  return getDb()
+    .prepare("SELECT * FROM sessions WHERE messaging_group_id = ? AND status = 'active'")
+    .all(messagingGroupId) as Session[];
+}
+
+export function closeActiveSessionsForMessagingGroup(messagingGroupId: string): number {
+  const result = getDb()
+    .prepare(
+      "UPDATE sessions SET status = 'closed', container_status = 'stopped', last_active = ? WHERE messaging_group_id = ? AND status = 'active'",
+    )
+    .run(new Date().toISOString(), messagingGroupId);
+  return result.changes;
+}
+
 export function getRunningSessions(): Session[] {
   return getDb().prepare("SELECT * FROM sessions WHERE container_status IN ('running', 'idle')").all() as Session[];
 }

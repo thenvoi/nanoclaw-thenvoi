@@ -11,6 +11,16 @@ function log(msg: string): void {
   console.error(`[claude-provider] ${msg}`);
 }
 
+function mergeEnv(...sources: Array<Record<string, string | undefined>>): Record<string, string> {
+  const merged: Record<string, string> = {};
+  for (const source of sources) {
+    for (const [key, value] of Object.entries(source)) {
+      if (value !== undefined) merged[key] = value;
+    }
+  }
+  return merged;
+}
+
 // Deferred SDK builtins that either sidestep nanoclaw's own scheduling or
 // don't fit our async message-passing model (they're designed for Claude
 // Code's interactive UI and would hang here).
@@ -72,6 +82,28 @@ interface SDKUserMessage {
   message: { role: 'user'; content: string };
   parent_tool_use_id: null;
   session_id: string;
+}
+
+interface SDKToolUseContent {
+  type: 'tool_use';
+  name?: string;
+}
+
+function userVisibleToolNames(message: unknown): string[] {
+  if (!message || typeof message !== 'object') return [];
+  const content = (message as { message?: { content?: unknown } }).message?.content;
+  if (!Array.isArray(content)) return [];
+
+  return content.flatMap((part): string[] => {
+    if (!part || typeof part !== 'object') return [];
+    const item = part as SDKToolUseContent;
+    if (item.type !== 'tool_use' || typeof item.name !== 'string') return [];
+    return isUserVisibleToolName(item.name) ? [item.name] : [];
+  });
+}
+
+function isUserVisibleToolName(name: string): boolean {
+  return name === 'mcp__nanoclaw__send_message' || name === 'mcp__nanoclaw__band_send_message';
 }
 
 /**
@@ -242,6 +274,7 @@ function createPreCompactHook(assistantName?: string): HookCallback {
  * with a 1M-context model variant or when emergency-tuning a deployment.
  */
 const CLAUDE_CODE_AUTO_COMPACT_WINDOW = process.env.CLAUDE_CODE_AUTO_COMPACT_WINDOW || '165000';
+const CLAUDE_CODE_EXECUTABLE = process.env.CLAUDE_CODE_EXECUTABLE || '/pnpm/claude';
 
 /**
  * Stale-session detection. Matches Claude Code's error text when a
@@ -278,6 +311,13 @@ export class ClaudeProvider implements AgentProvider {
     stream.push(input.prompt);
 
     const instructions = input.systemContext?.instructions;
+    const queryEnv = mergeEnv(this.env, input.env ?? {});
+    const mcpServers = Object.fromEntries(
+      Object.entries(this.mcpServers).map(([name, server]) => [
+        name,
+        { ...server, env: mergeEnv(server.env, input.env ?? {}) },
+      ]),
+    );
 
     const sdkResult = sdkQuery({
       prompt: stream,
@@ -285,18 +325,18 @@ export class ClaudeProvider implements AgentProvider {
         cwd: input.cwd,
         additionalDirectories: this.additionalDirectories,
         resume: input.continuation,
-        pathToClaudeCodeExecutable: '/pnpm/claude',
+        pathToClaudeCodeExecutable: CLAUDE_CODE_EXECUTABLE,
         systemPrompt: instructions ? { type: 'preset' as const, preset: 'claude_code' as const, append: instructions } : undefined,
         allowedTools: [
           ...TOOL_ALLOWLIST,
           ...Object.keys(this.mcpServers).map(mcpAllowPattern),
         ],
         disallowedTools: SDK_DISALLOWED_TOOLS,
-        env: this.env,
+        env: queryEnv,
         permissionMode: 'bypassPermissions',
         allowDangerouslySkipPermissions: true,
         settingSources: ['project', 'user'],
-        mcpServers: this.mcpServers,
+        mcpServers,
         hooks: {
           PreToolUse: [{ hooks: [preToolUseHook] }],
           PostToolUse: [{ hooks: [postToolUseHook] }],
@@ -319,6 +359,10 @@ export class ClaudeProvider implements AgentProvider {
 
         if (message.type === 'system' && message.subtype === 'init') {
           yield { type: 'init', continuation: message.session_id };
+        } else if (message.type === 'assistant') {
+          for (const name of userVisibleToolNames(message)) {
+            yield { type: 'user_visible_tool', name };
+          }
         } else if (message.type === 'result') {
           const text = 'result' in message ? (message as { result?: string }).result ?? null : null;
           yield { type: 'result', text };

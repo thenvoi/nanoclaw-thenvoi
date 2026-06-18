@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
 
-import { resolveProviderName } from './container-runner.js';
+import { resolveProviderName, rewriteOneCliProxyArgs } from './container-runner.js';
 
 describe('resolveProviderName', () => {
   it('prefers session over group and container.json', () => {
@@ -28,5 +28,32 @@ describe('resolveProviderName', () => {
   it('treats empty string as unset (falls through)', () => {
     expect(resolveProviderName('', 'codex', null)).toBe('codex');
     expect(resolveProviderName(null, '', 'opencode')).toBe('opencode');
+  });
+});
+
+describe('rewriteOneCliProxyArgs', () => {
+  it('rewrites OneCLI proxy host args for compose child containers', () => {
+    const args = [
+      'run',
+      '-e',
+      'HTTPS_PROXY=http://x:token@host.docker.internal:10255',
+      '-e',
+      'NO_PROXY=localhost,host.docker.internal',
+      '--add-host=host.docker.internal:host-gateway',
+    ];
+
+    rewriteOneCliProxyArgs(args, 'onecli');
+
+    expect(args).toContain('HTTPS_PROXY=http://x:token@onecli:10255');
+    expect(args).toContain('NO_PROXY=localhost,host.docker.internal');
+    expect(args).toContain('--add-host=host.docker.internal:host-gateway');
+  });
+
+  it('leaves args unchanged without a compose hostname', () => {
+    const args = ['-e', 'HTTPS_PROXY=http://x:token@host.docker.internal:10255'];
+
+    rewriteOneCliProxyArgs(args, undefined);
+
+    expect(args).toEqual(['-e', 'HTTPS_PROXY=http://x:token@host.docker.internal:10255']);
   });
 });

@@ -1,8 +1,6 @@
 # Dependencies
 node_modules/
 .npm-cache/
-# pnpm content-addressable store (created when running in sandbox mode)
-.pnpm-store/
 # Build output
 dist/
 
@@ -11,19 +9,22 @@ store/
 data/
 logs/
 
-# Groups - per-installation state, not tracked
+# Groups - only track base structure and specific CLAUDE.md files
 groups/*
-
-# Composer-managed CLAUDE.md artifacts (regenerated every spawn) and
-# per-group memory (CLAUDE.local.md) must never be committed.
-**/CLAUDE.local.md
-**/.claude-shared.md
-**/.claude-fragments/
+!groups/main/
+!groups/global/
+groups/main/*
+groups/global/*
+!groups/main/CLAUDE.md
+!groups/global/CLAUDE.md
 
 # Secrets
 *.keys.json
 .env
-.env*
+.env.local
+.env.prod
+.env.compose
+.env.compose.local
 
 # Temp files
 .tmp-*
@@ -39,3 +40,4 @@ groups/*
 .nanoclaw/
 
 agents-sdk-docs
+container/agent-runner/vendor/
