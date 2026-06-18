@@ -78,31 +78,47 @@ async function main(): Promise<void> {
   // 3. Channel adapters
   await initChannelAdapters((adapter: ChannelAdapter): ChannelSetup => {
     return {
-      onInbound(platformId, threadId, message) {
-        routeInbound({
-          channelType: adapter.channelType,
-          platformId,
-          threadId,
-          message: {
-            id: message.id,
-            kind: message.kind,
-            content: JSON.stringify(message.content),
-            timestamp: message.timestamp,
-            isMention: message.isMention,
-            isGroup: message.isGroup,
-          },
-        }).catch((err) => {
+      async onInbound(platformId, threadId, message) {
+        try {
+          return await routeInbound({
+            channelType: adapter.channelType,
+            platformId,
+            threadId,
+            message: {
+              id: message.id,
+              kind: message.kind,
+              content: JSON.stringify(message.content),
+              timestamp: message.timestamp,
+              isMention: message.isMention,
+              isGroup: message.isGroup,
+            },
+          });
+        } catch (err) {
           log.error('Failed to route inbound message', { channelType: adapter.channelType, err });
-        });
+          return {
+            status: 'failed',
+            platformMessageId: message.id,
+            reason: err instanceof Error ? err.message : 'route_failed',
+            retryable: true,
+          };
+        }
       },
-      onInboundEvent(event) {
-        routeInbound(event).catch((err) => {
+      async onInboundEvent(event) {
+        try {
+          return await routeInbound(event);
+        } catch (err) {
           log.error('Failed to route inbound event', {
             sourceAdapter: adapter.channelType,
             targetChannelType: event.channelType,
             err,
           });
-        });
+          return {
+            status: 'failed',
+            platformMessageId: event.message.id,
+            reason: err instanceof Error ? err.message : 'route_failed',
+            retryable: true,
+          };
+        }
       },
       onMetadata(platformId, name, isGroup) {
         log.info('Channel metadata discovered', {

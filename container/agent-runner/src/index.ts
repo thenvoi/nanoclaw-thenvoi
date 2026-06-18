@@ -32,6 +32,9 @@ import { buildSystemPromptAddendum } from './destinations.js';
 import './providers/index.js';
 import { createProvider, type ProviderName } from './providers/factory.js';
 import { runPollLoop } from './poll-loop.js';
+import { loadParticipantMemories } from './band-memory-load.js';
+import { runMemoryConsolidation } from './band-memory-consolidate.js';
+import { getContinuation } from './db/session-state.js';
 
 function log(msg: string): void {
   console.error(`[agent-runner] ${msg}`);
@@ -51,7 +54,15 @@ async function main(): Promise<void> {
   // /workspace/agent/CLAUDE.md — the composed entry imports the shared
   // base (/app/CLAUDE.md) and each enabled module's fragment. Per-group
   // memory lives in /workspace/agent/CLAUDE.local.md (auto-loaded).
-  const instructions = buildSystemPromptAddendum(config.assistantName || undefined);
+  let instructions = buildSystemPromptAddendum(config.assistantName || undefined);
+
+  // Band.ai memory pre-load (no-op when not Band or when feature is off).
+  // Appended once at startup so the agent has participant context from the
+  // first turn instead of needing to call list_memories itself.
+  const memoryBlock = await loadParticipantMemories();
+  if (memoryBlock) {
+    instructions = `${instructions}\n\n${memoryBlock}`;
+  }
 
   // Discover additional directories mounted at /workspace/extra/*
   const additionalDirectories: string[] = [];
@@ -72,12 +83,19 @@ async function main(): Promise<void> {
   const __dirname = path.dirname(fileURLToPath(import.meta.url));
   const mcpServerPath = path.join(__dirname, 'mcp-tools', 'index.ts');
 
-  // Build MCP servers config: nanoclaw built-in + any from container.json
+  const mcpEnv = Object.fromEntries(
+    Object.entries(process.env).filter((entry): entry is [string, string] => typeof entry[1] === 'string'),
+  );
+
+  // Build MCP servers config: nanoclaw built-in + any from container.json.
+  // The built-in server is a subprocess of the provider, so it needs the same
+  // container env as the runner for channel-provided tools (Band/Thenvoi, etc.)
+  // to register and for OneCLI proxy variables to reach SDK REST calls.
   const mcpServers: Record<string, { command: string; args: string[]; env: Record<string, string> }> = {
     nanoclaw: {
       command: 'bun',
       args: ['run', mcpServerPath],
-      env: {},
+      env: mcpEnv,
     },
   };
 
@@ -93,11 +111,37 @@ async function main(): Promise<void> {
     additionalDirectories: additionalDirectories.length > 0 ? additionalDirectories : undefined,
   });
 
+  // Graceful shutdown: when the host stops the container (SIGTERM from
+  // `docker stop`), abort the poll loop so the in-flight query can wind
+  // down cleanly. After the loop returns, Band.ai consolidation runs
+  // (no-op when not enabled) before the process exits.
+  const shutdown = new AbortController();
+  let shuttingDown = false;
+  const onSignal = (sig: NodeJS.Signals) => {
+    if (shuttingDown) return;
+    shuttingDown = true;
+    log(`Received ${sig} — aborting poll loop`);
+    shutdown.abort();
+  };
+  process.on('SIGTERM', () => onSignal('SIGTERM'));
+  process.on('SIGINT', () => onSignal('SIGINT'));
+
   await runPollLoop({
     provider,
     providerName,
     cwd: CWD,
     systemContext: { instructions },
+    signal: shutdown.signal,
+  });
+
+  // Post-loop hooks. Continuation is read fresh from outbound.db — the loop
+  // persists it on every `init` event, so this picks up the latest session id.
+  const continuation = getContinuation(providerName);
+  await runMemoryConsolidation({
+    provider,
+    providerName,
+    cwd: CWD,
+    continuation,
   });
 }
 

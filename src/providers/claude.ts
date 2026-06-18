@@ -5,7 +5,7 @@
  * standard installs hitting api.anthropic.com don't need this file
  * loaded.
  *
- * The real auth token never enters the container. Setup creates an
+ * The real auth token never enters the container. Setup creates a
  * OneCLI generic secret (host-pattern = base URL hostname, header-name
  * = Authorization, value-format = "Bearer {value}") so the proxy
  * rewrites the Authorization header on the wire. The container only

@@ -1,6 +1,12 @@
 import { registerProvider } from './provider-registry.js';
 import type { AgentProvider, AgentQuery, ProviderEvent, ProviderOptions, QueryInput } from './types.js';
 
+function defaultMockResponse(prompt: string): string {
+  const fromMatch = prompt.match(/\bfrom="([^"]+)"/);
+  const response = `Mock response to: ${prompt.slice(0, 100)}`;
+  return fromMatch ? `<message to="${fromMatch[1]}">${response}</message>` : response;
+}
+
 /**
  * Mock provider for testing. Returns canned responses.
  * Supports push() — queued messages produce additional results.
@@ -11,7 +17,7 @@ export class MockProvider implements AgentProvider {
   private responseFactory: (prompt: string) => string;
 
   constructor(_options: ProviderOptions = {}, responseFactory?: (prompt: string) => string) {
-    this.responseFactory = responseFactory ?? ((prompt) => `Mock response to: ${prompt.slice(0, 100)}`);
+    this.responseFactory = responseFactory ?? defaultMockResponse;
   }
 
   isSessionInvalid(_err: unknown): boolean {

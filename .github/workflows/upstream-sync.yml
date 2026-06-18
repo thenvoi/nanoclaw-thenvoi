@@ -1,0 +1,99 @@
+name: Sync upstream NanoClaw base
+
+on:
+  workflow_dispatch:
+    inputs:
+      upstream_ref:
+        description: Upstream qwibitai/nanoclaw ref to mirror
+        required: false
+        type: string
+        default: main
+      dry_run:
+        description: Validate without pushing the mirror branch
+        required: false
+        type: boolean
+        default: false
+  schedule:
+    - cron: '17 6 * * *'
+
+concurrency:
+  group: upstream-sync-sync-upstream-2
+  cancel-in-progress: false
+
+permissions:
+  contents: write
+  pull-requests: read
+
+jobs:
+  sync-upstream-base:
+    if: github.repository == 'thenvoi/nanoclaw-thenvoi'
+    runs-on: ubuntu-latest
+    env:
+      UPSTREAM_REPO: qwibitai/nanoclaw
+      UPSTREAM_REF_INPUT: ${{ github.event.inputs.upstream_ref }}
+      MIRROR_BRANCH: sync-upstream-2
+      DRY_RUN_INPUT: ${{ github.event.inputs.dry_run }}
+    steps:
+      - name: Check out fork
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+          token: ${{ github.token }}
+
+      - name: Configure git identity
+        shell: bash
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+
+      - name: Fetch upstream
+        id: upstream
+        shell: bash
+        run: |
+          set -euo pipefail
+          upstream_ref="${UPSTREAM_REF_INPUT:-main}"
+          mirror_branch="${MIRROR_BRANCH}"
+
+          git remote add upstream "https://github.com/${UPSTREAM_REPO}.git" 2>/dev/null || git remote set-url upstream "https://github.com/${UPSTREAM_REPO}.git"
+          git fetch upstream "${upstream_ref}" --tags
+          upstream_sha="$(git rev-parse "upstream/${upstream_ref}")"
+
+          echo "upstream_ref=${upstream_ref}" >> "$GITHUB_OUTPUT"
+          echo "upstream_sha=${upstream_sha}" >> "$GITHUB_OUTPUT"
+          echo "mirror_branch=${mirror_branch}" >> "$GITHUB_OUTPUT"
+
+      - name: Validate upstream checkout
+        shell: bash
+        run: |
+          set -euo pipefail
+          git checkout --detach "${{ steps.upstream.outputs.upstream_sha }}"
+          corepack enable
+          corepack prepare pnpm@10.33.0 --activate
+          pnpm install --frozen-lockfile
+          pnpm run build
+          pnpm test
+
+      - name: Update mirror branch
+        if: ${{ github.event.inputs.dry_run != 'true' }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          mirror_branch="${{ steps.upstream.outputs.mirror_branch }}"
+          upstream_sha="${{ steps.upstream.outputs.upstream_sha }}"
+
+          git checkout -B "${mirror_branch}" "${upstream_sha}"
+          git push origin "${mirror_branch}" --force-with-lease
+
+      - name: Summary
+        shell: bash
+        run: |
+          {
+            echo "## Upstream NanoClaw base sync"
+            echo
+            echo "- Upstream: \`${UPSTREAM_REPO}@${{ steps.upstream.outputs.upstream_ref }}\`"
+            echo "- Upstream commit: \`${{ steps.upstream.outputs.upstream_sha }}\`"
+            echo "- Mirror branch: \`${{ steps.upstream.outputs.mirror_branch }}\`"
+            echo "- Dry run: \`${DRY_RUN_INPUT:-false}\`"
+            echo
+            echo "Band.ai migration/runtime PRs should target \`${{ steps.upstream.outputs.mirror_branch }}\` so GitHub compares them against the latest upstream NanoClaw v2 base instead of the old fork main."
+          } >> "$GITHUB_STEP_SUMMARY"

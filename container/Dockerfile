@@ -16,11 +16,10 @@ FROM node:22-slim
 # CJK fonts add ~200MB. Opt in only if you render Chinese/Japanese/Korean text.
 ARG INSTALL_CJK_FONTS=false
 
-# Pin CLI versions for reproducibility. Bump deliberately — unpinned installs
-# mean every rebuild silently picks up the latest and can break in lockstep
-# across all users.
+# Pin CLI versions for reproducibility. Bump these deliberately after testing
+# the rebuilt agent image.
 ARG CLAUDE_CODE_VERSION=2.1.116
-ARG AGENT_BROWSER_VERSION=latest
+ARG AGENT_BROWSER_VERSION=0.27.0
 ARG VERCEL_VERSION=52.2.1
 ARG BUN_VERSION=1.3.12
 
@@ -90,7 +89,7 @@ RUN --mount=type=cache,target=/root/.bun/install/cache \
 #     binary (linux-arm64 variant on our image). Without the allowlist
 #     the SDK fails at spawn time with "native binary not found".
 ENV PNPM_HOME="/pnpm"
-ENV PATH="$PNPM_HOME:$PATH"
+ENV PATH="$PNPM_HOME/bin:$PNPM_HOME:$PATH"
 # Pin pnpm to match the host (package.json packageManager). pnpm 11 stopped
 # honoring `only-built-dependencies[]=` in .npmrc for global installs, which
 # silently skips claude-code's native-binary postinstall and agent-browser's
@@ -108,7 +107,8 @@ RUN --mount=type=cache,target=/root/.cache/pnpm \
     pnpm install -g "agent-browser@${AGENT_BROWSER_VERSION}"
 
 RUN --mount=type=cache,target=/root/.cache/pnpm \
-    pnpm install -g "@anthropic-ai/claude-code@${CLAUDE_CODE_VERSION}"
+    pnpm install -g "@anthropic-ai/claude-code@${CLAUDE_CODE_VERSION}" && \
+    node "$(pnpm root -g)/@anthropic-ai/claude-code/install.cjs"
 
 # ---- Entrypoint --------------------------------------------------------------
 COPY entrypoint.sh /app/entrypoint.sh

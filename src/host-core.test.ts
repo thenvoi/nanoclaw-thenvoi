@@ -16,6 +16,7 @@ import {
   createAgentGroup,
   createMessagingGroup,
   createMessagingGroupAgent,
+  getInboundDelivery,
 } from './db/index.js';
 import {
   resolveSession,
@@ -407,7 +408,8 @@ describe('router', () => {
       },
     };
 
-    await routeInbound(event);
+    const result = await routeInbound(event);
+    expect(result.status).toBe('persisted');
 
     // Verify session was created
     const session = findSession('mg-1', null);
@@ -422,20 +424,28 @@ describe('router', () => {
     expect(rows).toHaveLength(1);
     expect(JSON.parse(rows[0].content).text).toBe('Hello agent!');
 
+    const ledger = getInboundDelivery({
+      channelType: 'discord',
+      platformId: 'chan-123',
+      platformMessageId: 'msg-in-1',
+    });
+    expect(ledger?.status).toBe('persisted');
+    expect(JSON.parse(ledger!.session_ids_json!)).toEqual([session!.id]);
+
     // Verify container was woken
     expect(wakeContainer).toHaveBeenCalled();
   });
 
   it('auto-creates messaging group only when the bot is addressed (mention/DM)', async () => {
     // The router's no-mg branch is escalation-gated: plain chatter on an
-    // unknown channel stays silent (no DB writes) so a bot that sits in
-    // many unwired channels doesn't bloat messaging_groups. Only explicit
-    // mentions and DMs trigger auto-create.
+    // unknown channel does not create messaging_groups, but it is recorded in
+    // the delivery ledger so ACK-aware adapters can avoid silent message loss.
+    // Only explicit mentions and DMs trigger auto-create.
     const { routeInbound } = await import('./router.js');
     const { getMessagingGroupByPlatform } = await import('./db/messaging-groups.js');
 
     // Plain message on unknown channel — should NOT auto-create.
-    await routeInbound({
+    const plainResult = await routeInbound({
       channelType: 'slack',
       platformId: 'C-PLAIN',
       threadId: null,
@@ -446,10 +456,14 @@ describe('router', () => {
         timestamp: now(),
       },
     });
+    expect(plainResult).toMatchObject({ status: 'dropped', reason: 'no_messaging_group', retryable: true });
     expect(getMessagingGroupByPlatform('slack', 'C-PLAIN')).toBeUndefined();
+    expect(
+      getInboundDelivery({ channelType: 'slack', platformId: 'C-PLAIN', platformMessageId: 'msg-plain' })?.status,
+    ).toBe('retrying');
 
     // Mention on unknown channel — SHOULD auto-create (next step: channel-registration flow).
-    await routeInbound({
+    const mentionedResult = await routeInbound({
       channelType: 'slack',
       platformId: 'C-MENTIONED',
       threadId: null,
@@ -461,7 +475,69 @@ describe('router', () => {
         isMention: true,
       },
     });
+    expect(mentionedResult).toMatchObject({ status: 'dropped', reason: 'no_agent_wired', retryable: true });
     expect(getMessagingGroupByPlatform('slack', 'C-MENTIONED')).toBeDefined();
+  });
+
+  it('audits non-mention messages in known-but-unwired rooms', async () => {
+    const { routeInbound } = await import('./router.js');
+    createMessagingGroup({
+      id: 'mg-unwired',
+      channel_type: 'band',
+      platform_id: 'band:room-unwired',
+      name: 'Unwired Band Room',
+      is_group: 1,
+      unknown_sender_policy: 'public',
+      created_at: now(),
+    });
+
+    const result = await routeInbound({
+      channelType: 'band',
+      platformId: 'band:room-unwired',
+      threadId: null,
+      message: {
+        id: 'band-msg-unwired-plain',
+        kind: 'chat',
+        content: JSON.stringify({ sender: 'Band User', text: 'hello?' }),
+        timestamp: now(),
+      },
+    });
+
+    expect(result).toMatchObject({ status: 'dropped', reason: 'no_agent_wired_unmentioned', retryable: true });
+    expect(
+      getInboundDelivery({
+        channelType: 'band',
+        platformId: 'band:room-unwired',
+        platformMessageId: 'band-msg-unwired-plain',
+      })?.status,
+    ).toBe('retrying');
+  });
+
+  it('dedupes repeated platform message ids after persistence', async () => {
+    const { routeInbound } = await import('./router.js');
+
+    const event: InboundEvent = {
+      channelType: 'discord',
+      platformId: 'chan-123',
+      threadId: null,
+      message: {
+        id: 'msg-duplicate-platform-id',
+        kind: 'chat',
+        content: JSON.stringify({ sender: 'User', text: 'deliver once' }),
+        timestamp: now(),
+      },
+    };
+
+    const first = await routeInbound(event);
+    const second = await routeInbound(event);
+    expect(first.status).toBe('persisted');
+    expect(second.status).toBe('persisted');
+
+    const session = findSession('mg-1', null)!;
+    const db = new Database(inboundDbPath('ag-1', session.id));
+    const rows = db.prepare('SELECT * FROM messages_in WHERE id = ?').all('msg-duplicate-platform-id:ag-1');
+    db.close();
+    expect(rows).toHaveLength(1);
   });
 
   it('should route multiple messages to the same session', async () => {
@@ -838,7 +914,6 @@ describe('agent-shared session resolution', () => {
     const { session } = resolveSession('ag-1', null, null, 'agent-shared');
     expect(session.messaging_group_id).toBeNull();
   });
-
 });
 
 describe('agent-to-agent routing', () => {
@@ -885,7 +960,12 @@ describe('agent-to-agent routing', () => {
     const { session: paSlackSession } = resolveSession('ag-pa', 'mg-slack', null, 'shared');
 
     await routeAgentMessage(
-      { id: 'out-a2a-1', platform_id: 'ag-researcher', content: JSON.stringify({ text: 'research this' }) },
+      {
+        id: 'out-a2a-1',
+        platform_id: 'ag-researcher',
+        content: JSON.stringify({ text: 'research this' }),
+        in_reply_to: null,
+      },
       paSlackSession,
     );
 
@@ -928,7 +1008,7 @@ describe('agent-to-agent routing', () => {
 
     // PA sends from Slack
     await routeAgentMessage(
-      { id: 'out-fwd', platform_id: 'ag-researcher', content: JSON.stringify({ text: 'research' }) },
+      { id: 'out-fwd', platform_id: 'ag-researcher', content: JSON.stringify({ text: 'research' }), in_reply_to: null },
       paSlackSession,
     );
 
@@ -937,7 +1017,7 @@ describe('agent-to-agent routing', () => {
     const researcherSession = getSessionsByAgentGroup('ag-researcher')[0];
 
     await routeAgentMessage(
-      { id: 'out-reply', platform_id: 'ag-pa', content: JSON.stringify({ text: 'found it' }) },
+      { id: 'out-reply', platform_id: 'ag-pa', content: JSON.stringify({ text: 'found it' }), in_reply_to: null },
       researcherSession,
     );
 
@@ -961,7 +1041,7 @@ describe('agent-to-agent routing', () => {
 
     const { session: paSession } = resolveSession('ag-pa', 'mg-slack', null, 'shared');
     await routeAgentMessage(
-      { id: 'out-1', platform_id: 'ag-researcher', content: JSON.stringify({ text: 'go' }) },
+      { id: 'out-1', platform_id: 'ag-researcher', content: JSON.stringify({ text: 'go' }), in_reply_to: null },
       paSession,
     );
 

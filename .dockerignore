@@ -1,0 +1,26 @@
+.git
+.github
+.claude
+.env
+.env.*
+node_modules
+coverage
+dist
+container/node_modules
+container/agent-runner/node_modules
+
+# Runtime state and local credentials must be supplied by explicit mounts, not baked into images.
+store/
+data/
+logs/
+groups/
+.nanoclaw/
+repo-tokens
+agents-sdk-docs
+*.keys.json
+**/CLAUDE.local.md
+**/.claude-shared.md
+**/.claude-fragments/
+.DS_Store
+.idea/
+.vscode/

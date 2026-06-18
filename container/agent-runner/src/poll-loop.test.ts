@@ -262,6 +262,24 @@ describe('mock provider', () => {
     expect(results[0].text).toBe('Re: First');
     expect(results[1].text).toBe('Re: Second');
   });
+
+  it('should wrap default responses for the originating destination', async () => {
+    const provider = new MockProvider();
+    const query = provider.query({
+      prompt: '<message from="band-live-smoke" sender="User">hello</message>',
+      cwd: '/tmp',
+    });
+
+    const events: Array<{ type: string; text?: string }> = [];
+    setTimeout(() => query.end(), 50);
+
+    for await (const event of query.events) {
+      events.push(event);
+    }
+
+    const result = events.find((event) => event.type === 'result');
+    expect(result?.text).toContain('<message to="band-live-smoke">Mock response to:');
+  });
 });
 
 describe('end-to-end with mock provider', () => {
